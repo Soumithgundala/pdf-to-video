@@ -1,0 +1,42 @@
+# ========================
+# Node / Frontend (React/Vite)
+# ========================
+.env
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# ========================
+# Python / Backend
+# ========================
+__pycache__/
+venv/
+*.pyc
+
+# ========================
+# Databases
+# ========================
+*.db
+*.sqlite3
+# (This will ignore your jobs.db file)
+
+# ========================
+# Temp Workspaces & Media
+# ========================
+temp_workspace/
+*.mp4
+*.tmp
+# (This ignores your part_1...mp4 files and temp folders)
+
+# ========================
+# Zips and Large Binaries
+# ========================
+*.zip
+# (This ignores poppler.zip)
+
+# ========================
+# OS Generated Files
+# ========================
+.DS_Store
+Thumbs.db

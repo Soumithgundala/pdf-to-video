@@ -1,0 +1,31 @@
+# PDF Processing
+pdf2image>=1.17.0
+opencv-python>=4.9.0
+Pillow>=10.2.0
+numpy>=1.26.0
+
+# AI/LLM Integration
+openai>=1.12.0
+google-genai>=1.0.0
+
+# Audio Generation
+edge-tts>=6.1.9
+mutagen>=1.47.0
+
+# Video Assembly
+moviepy>=1.0.3
+imageio-ffmpeg>=0.4.9
+
+# Web Framework
+fastapi>=0.109.0
+uvicorn>=0.27.0
+python-multipart>=0.0.6
+
+# Database
+supabase>=2.3.0
+
+# Utilities
+pydantic>=2.6.0
+python-dotenv>=1.0.0
+aiofiles>=23.2.1
+httpx>=0.26.0
