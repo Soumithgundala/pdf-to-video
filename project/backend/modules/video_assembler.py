@@ -13,6 +13,7 @@ from dataclasses import dataclass
 import numpy as np
 from PIL import Image
 import logging
+import cv2
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +105,7 @@ class KenBurnsEffect:
 
 class VideoAssembler:
     """Assembles final videos with effects and audio."""
+    _nvenc_available = None
 
     def __init__(
         self,
@@ -130,6 +132,46 @@ class VideoAssembler:
 
         self.ken_burns = KenBurnsEffect()
         logger.info("MoviePy ffmpeg binary: %s", app_config.FFMPEG_BINARY)
+
+        # Check NVENC capability once
+        if VideoAssembler._nvenc_available is None:
+            VideoAssembler._nvenc_available = self._test_nvenc()
+
+        if VideoAssembler._nvenc_available:
+            self.default_codec = app_config.VIDEO_CODEC
+            self.default_preset = app_config.VIDEO_PRESET
+            logger.info("Using NVIDIA hardware encoding (h264_nvenc)")
+        else:
+            self.default_codec = app_config.VIDEO_FALLBACK_CODEC
+            self.default_preset = app_config.VIDEO_FALLBACK_PRESET
+            logger.info("NVIDIA hardware encoding not available. Using CPU software encoding (libx264)")
+
+    def _test_nvenc(self) -> bool:
+        """Test if h264_nvenc is actually usable on this hardware."""
+        import tempfile
+        import subprocess
+        
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_out = Path(tmpdir) / "test_nvenc.mp4"
+            try:
+                # Generate a 1-second 64x64 video using h264_nvenc
+                cmd = [
+                    app_config.FFMPEG_BINARY,
+                    "-y",
+                    "-f", "lavfi",
+                    "-i", "color=c=black:s=64x64:d=1",
+                    "-c:v", "h264_nvenc",
+                    str(temp_out)
+                ]
+                result = subprocess.run(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=5
+                )
+                return result.returncode == 0
+            except Exception:
+                return False
 
     def assemble_video(
         self,
@@ -187,54 +229,58 @@ class VideoAssembler:
                 app_config.TARGET_AUDIO_DURATION_SECONDS
             )
 
-        # Write output, preferring NVIDIA hardware encoding when available.
+        # Write output using the cached default codec (NVENC or CPU)
         output_path = config.output_path
-        nvenc_output_path = output_path.with_suffix(".nvenc.tmp.mp4")
-        cpu_output_path = output_path.with_suffix(".cpu.tmp.mp4")
+        tmp_output_path = output_path.with_suffix(".tmp.mp4")
 
-        for stale_path in (nvenc_output_path, cpu_output_path):
-            if stale_path.exists():
-                stale_path.unlink()
+        if tmp_output_path.exists():
+            tmp_output_path.unlink()
 
         try:
             logger.info(
                 "Encoding video part %s with %s...",
                 config.part_number,
-                app_config.VIDEO_CODEC
+                self.default_codec
             )
             self._write_videofile_with_watchdog(
                 final_video,
-                nvenc_output_path,
+                tmp_output_path,
                 part_number=config.part_number,
-                codec=app_config.VIDEO_CODEC,
-                preset=app_config.VIDEO_PRESET
+                codec=self.default_codec,
+                preset=self.default_preset
             )
-            self._validate_video_file(nvenc_output_path)
-            nvenc_output_path.replace(output_path)
-        except Exception as nvenc_error:
+            self._validate_video_file(tmp_output_path)
+            tmp_output_path.replace(output_path)
+        except Exception as encode_error:
             logger.warning(
-                "%s encoding failed for video part %s: %s",
-                app_config.VIDEO_CODEC,
+                "Encoding failed for video part %s using %s: %s",
                 config.part_number,
-                nvenc_error
+                self.default_codec,
+                encode_error
             )
-            if nvenc_output_path.exists():
-                nvenc_output_path.unlink()
+            if tmp_output_path.exists():
+                tmp_output_path.unlink()
+
+            fallback_codec = app_config.VIDEO_FALLBACK_CODEC
+            fallback_preset = app_config.VIDEO_FALLBACK_PRESET
+            
+            if self.default_codec == fallback_codec:
+                raise encode_error
 
             logger.info(
                 "Retrying video part %s with %s software encoding...",
                 config.part_number,
-                app_config.VIDEO_FALLBACK_CODEC
+                fallback_codec
             )
             self._write_videofile_with_watchdog(
                 final_video,
-                cpu_output_path,
+                tmp_output_path,
                 part_number=config.part_number,
-                codec=app_config.VIDEO_FALLBACK_CODEC,
-                preset=app_config.VIDEO_FALLBACK_PRESET
+                codec=fallback_codec,
+                preset=fallback_preset
             )
-            self._validate_video_file(cpu_output_path)
-            cpu_output_path.replace(output_path)
+            self._validate_video_file(tmp_output_path)
+            tmp_output_path.replace(output_path)
 
         total_duration = final_video.duration
 
@@ -336,14 +382,24 @@ class VideoAssembler:
 
             stalled_for = time.monotonic() - last_progress_time
             if stalled_for >= timeout_seconds:
-                logger.critical(
-                    "Encoding part %s with %s stalled for %.0fs at %s bytes. Crashing backend.",
-                    part_number,
-                    codec,
-                    stalled_for,
-                    current_size
-                )
-                os._exit(1)
+                if codec == "libx264":
+                    logger.warning(
+                        "Encoding part %s with %s stalled for %.0fs at %s bytes. Skipping crash because it is software encoding (Windows caching).",
+                        part_number,
+                        codec,
+                        stalled_for,
+                        current_size
+                    )
+                    last_progress_time = time.monotonic()
+                else:
+                    logger.critical(
+                        "Encoding part %s with %s stalled for %.0fs at %s bytes. Crashing backend.",
+                        part_number,
+                        codec,
+                        stalled_for,
+                        current_size
+                    )
+                    os._exit(1)
 
     def _calculate_panel_durations(
         self,
@@ -376,18 +432,24 @@ class VideoAssembler:
         start_time: float = 0
     ) -> ImageClip:
         """Create a video clip for a single panel with Ken Burns effect."""
-        # Load image
-        img = Image.open(panel_path)
-        img_array = np.array(img)
+        # Load image and scale to cover size once using OpenCV
+        img = cv2.imread(str(panel_path))
+        if img is None:
+            raise ValueError(f"Failed to load image: {panel_path}")
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+        h_orig, w_orig = img.shape[:2]
+        scale = self._get_resize_factor((w_orig, h_orig))
+        new_w = int(w_orig * scale)
+        new_h = int(h_orig * scale)
+        img_resized = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
 
         # Create base clip
-        clip = ImageClip(img_array, duration=duration)
+        clip = ImageClip(img_resized, duration=duration)
 
         # Apply Ken Burns effect
         effect_params = self.ken_burns.get_random_effect()
-
-        # Resize to fit resolution while maintaining aspect ratio
-        clip = clip.resized(self._get_resize_factor(img.size))
+        target_w, target_h = self.resolution
 
         # Apply zoom effect
         def zoom_effect(get_frame, t):
@@ -400,8 +462,15 @@ class VideoAssembler:
 
             h, w = frame.shape[:2]
             new_h, new_w = int(h / current_zoom), int(w / current_zoom)
+            
+            new_h = min(new_h, h)
+            new_w = min(new_w, w)
+            
             y_start = int((h - new_h) * (0.5 + effect_params["start_y"] * progress))
             x_start = int((w - new_w) * (0.5 + effect_params["start_x"] * progress))
+            
+            y_start = max(0, min(y_start, h - new_h))
+            x_start = max(0, min(x_start, w - new_w))
 
             cropped = frame[
                 y_start:y_start + new_h,
@@ -409,12 +478,12 @@ class VideoAssembler:
             ]
 
             if cropped.shape[:2] != (h, w):
-                cropped_img = Image.fromarray(cropped)
-                cropped = np.array(cropped_img.resize((w, h), Image.Resampling.BILINEAR))
+                cropped = cv2.resize(cropped, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
 
             return cropped
 
         clip = clip.transform(zoom_effect)
+        clip.size = (target_w, target_h) # Set clip size to final target size
 
         # Set start time
         clip = clip.with_start(start_time)
