@@ -87,7 +87,7 @@ class LLMStoryDirector:
             if genai is None:
                 raise ImportError("google-genai package not installed")
             self.client = genai.Client(api_key=config.GOOGLE_API_KEY) if config.GOOGLE_API_KEY else None
-            self.model = model or "gemini-2.5-flash-preview-05-20"
+            self.model = model or "gemini-2.5-flash"
         else:
             raise ValueError(f"Unsupported provider: {provider}")
 
