@@ -35,10 +35,25 @@ app = FastAPI(
 
 def _normalize_status_payload(job_id: str, payload: dict) -> dict:
     """Normalize status payloads from Supabase/filesystem into one shape."""
+    status = payload.get("status", "pending")
+    is_completed = status == "completed"
+
     normalized = {
         "job_id": job_id,
-        "status": payload.get("status", "pending"),
+        "status": status,
         "progress": payload.get("progress", 0.0),
+        "phase_1_status": "completed" if is_completed else payload.get("phase_1_status", "pending"),
+        "phase_1_progress": 1.0 if is_completed else payload.get("phase_1_progress", 0.0),
+        "phase_1_message": "PDF converted and panels extracted" if is_completed else payload.get("phase_1_message", ""),
+        "phase_2_status": "completed" if is_completed else payload.get("phase_2_status", "pending"),
+        "phase_2_progress": 1.0 if is_completed else payload.get("phase_2_progress", 0.0),
+        "phase_2_message": "Story analysis complete" if is_completed else payload.get("phase_2_message", ""),
+        "phase_3_status": "completed" if is_completed else payload.get("phase_3_status", "pending"),
+        "phase_3_progress": 1.0 if is_completed else payload.get("phase_3_progress", 0.0),
+        "phase_3_message": "Audio generation complete" if is_completed else payload.get("phase_3_message", ""),
+        "phase_4_status": "completed" if is_completed else payload.get("phase_4_status", "pending"),
+        "phase_4_progress": 1.0 if is_completed else payload.get("phase_4_progress", 0.0),
+        "phase_4_message": "Video assembly complete" if is_completed else payload.get("phase_4_message", ""),
     }
 
     for field in ("message", "pdf_filename", "total_pages", "total_panels", "error_message"):
@@ -159,6 +174,18 @@ class JobStatus(BaseModel):
     status: str
     progress: float = 0.0
     message: str = ""
+    phase_1_status: str = "pending"
+    phase_1_progress: float = 0.0
+    phase_1_message: str = ""
+    phase_2_status: str = "pending"
+    phase_2_progress: float = 0.0
+    phase_2_message: str = ""
+    phase_3_status: str = "pending"
+    phase_3_progress: float = 0.0
+    phase_3_message: str = ""
+    phase_4_status: str = "pending"
+    phase_4_progress: float = 0.0
+    phase_4_message: str = ""
 
 
 class ProcessRequest(BaseModel):
@@ -338,44 +365,99 @@ def run_pipeline(job_id: str, pdf_path: Path, llm_provider: str):
 @app.get("/api/jobs/{job_id}/status")
 async def get_job_status(job_id: str):
     """Get job processing status."""
-    # Try Supabase first
+    db_job = None
     if supabase:
         try:
             result = supabase.table("jobs").select("*").eq("id", job_id).maybe_single().execute()
-            job = result.data if result else None
-            if job:
-                progress = 0.0
-                if job["status"] == "processing":
-                    progress = 0.5
-                elif job["status"] == "completed":
-                    progress = 1.0
-                return _normalize_status_payload(job_id, {
-                    **job,
-                    "progress": progress,
-                })
+            db_job = result.data if result else None
         except Exception as e:
             logger.warning(f"Could not fetch status from Supabase: {e}")
 
     # Check for status file written by pipeline
     job_workspace = WORKSPACE_DIR / job_id
     status_file = job_workspace / "status.json"
+    file_status = None
     if status_file.exists():
         try:
             with open(status_file, encoding="utf-8") as f:
                 file_status = _normalize_status_payload(job_id, json.load(f))
-            inferred_status = _infer_filesystem_status(job_id)
+        except Exception:
+            pass
 
+    if db_job:
+        # Normalize DB status
+        progress = 0.0
+        if db_job["status"] == "processing":
+            progress = 0.5
+        elif db_job["status"] == "completed":
+            progress = 1.0
+
+        db_status = _normalize_status_payload(job_id, {
+            **db_job,
+            "progress": progress,
+        })
+
+        if file_status:
+            # Merge filesystem progress & phase details into DB status
+            merged = {**db_status, **file_status}
+            # Respect DB status as the ground truth of lifecycle
+            merged["status"] = db_status["status"]
+            if db_status["status"] == "completed":
+                merged["progress"] = 1.0
+                merged["phase_1_status"] = "completed"
+                merged["phase_1_progress"] = 1.0
+                merged["phase_2_status"] = "completed"
+                merged["phase_2_progress"] = 1.0
+                merged["phase_3_status"] = "completed"
+                merged["phase_3_progress"] = 1.0
+                merged["phase_4_status"] = "completed"
+                merged["phase_4_progress"] = 1.0
+            elif db_status["status"] == "failed":
+                merged["progress"] = 0.0
+                for p in ["phase_1", "phase_2", "phase_3", "phase_4"]:
+                    if merged.get(f"{p}_status") == "processing":
+                        merged[f"{p}_status"] = "failed"
+                        merged[f"{p}_message"] = db_status.get("error_message", "Failed")
+            return merged
+
+        # Fallback to inference if filesystem status file doesn't exist
+        try:
+            inferred = _infer_filesystem_status(job_id)
+            merged = {**db_status, **inferred}
+            if db_status["status"] == "completed":
+                merged["progress"] = 1.0
+                merged["phase_1_status"] = "completed"
+                merged["phase_1_progress"] = 1.0
+                merged["phase_2_status"] = "completed"
+                merged["phase_2_progress"] = 1.0
+                merged["phase_3_status"] = "completed"
+                merged["phase_3_progress"] = 1.0
+                merged["phase_4_status"] = "completed"
+                merged["phase_4_progress"] = 1.0
+            return merged
+        except Exception:
+            return db_status
+
+    if file_status:
+        try:
+            inferred_status = _infer_filesystem_status(job_id)
             if inferred_status["progress"] > file_status["progress"]:
-                merged = {**file_status, **inferred_status}
+                merged = {**file_status}
+                merged["progress"] = inferred_status["progress"]
+                merged["status"] = inferred_status["status"]
+                if inferred_status["status"] == "completed":
+                    merged["progress"] = 1.0
+                    for p in ["phase_1", "phase_2", "phase_3", "phase_4"]:
+                        merged[f"{p}_status"] = "completed"
+                        merged[f"{p}_progress"] = 1.0
                 if "message" in file_status:
                     merged["message"] = file_status["message"]
                 if "error_message" in file_status:
                     merged["error_message"] = file_status["error_message"]
                 return merged
-
             return file_status
         except Exception:
-            pass
+            return file_status
 
     return _infer_filesystem_status(job_id)
 
