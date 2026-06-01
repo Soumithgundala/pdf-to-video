@@ -46,6 +46,20 @@ class MangaPipeline:
         self.job_id: Optional[str] = None
         self.job_workspace: Optional[Path] = None
 
+        # Phase tracking states
+        self.phase_1_status = "pending"
+        self.phase_1_progress = 0.0
+        self.phase_1_message = "Pending"
+        self.phase_2_status = "pending"
+        self.phase_2_progress = 0.0
+        self.phase_2_message = "Pending"
+        self.phase_3_status = "pending"
+        self.phase_3_progress = 0.0
+        self.phase_3_message = "Pending"
+        self.phase_4_status = "pending"
+        self.phase_4_progress = 0.0
+        self.phase_4_message = "Pending"
+
     def process(
         self,
         pdf_path: Path,
@@ -85,7 +99,15 @@ class MangaPipeline:
         }
 
         try:
-            self._write_status("processing", 0.05, "Preparing workspace")
+            self._write_status(
+                "processing",
+                0.05,
+                "Preparing workspace",
+                active_phase="phase_1",
+                phase_status="processing",
+                phase_progress=0.0,
+                phase_message="Preparing workspace"
+            )
 
             # Phase 1: PDF Processing & Panel Extraction
             logger.info("=" * 50)
@@ -100,12 +122,30 @@ class MangaPipeline:
                 "panels": len(panel_paths),
                 "contact_sheets": [str(p) for p in contact_sheet_paths]
             }
-            self._write_status("processing", 0.25, "PDF converted and panels extracted")
+            self._write_status(
+                "processing",
+                0.25,
+                "PDF converted and panels extracted",
+                active_phase="phase_1",
+                phase_status="completed",
+                phase_progress=1.0,
+                phase_message="PDF converted and panels extracted"
+            )
 
             # Phase 2: LLM Story Director
             logger.info("=" * 50)
             logger.info("PHASE 2: LLM Story Director")
             logger.info("=" * 50)
+
+            self._write_status(
+                "processing",
+                0.25,
+                "Starting story analysis",
+                active_phase="phase_2",
+                phase_status="processing",
+                phase_progress=0.0,
+                phase_message="Starting story analysis"
+            )
 
             story_analysis = self._run_phase_2(page_paths, contact_sheet_paths, len(panel_paths))
 
@@ -114,12 +154,30 @@ class MangaPipeline:
                 "story_parts": len(story_analysis.parts),
                 "total_panels_selected": story_analysis.total_panels_selected
             }
-            self._write_status("processing", 0.5, "Story analysis complete")
+            self._write_status(
+                "processing",
+                0.5,
+                "Story analysis complete",
+                active_phase="phase_2",
+                phase_status="completed",
+                phase_progress=1.0,
+                phase_message="Story analysis complete"
+            )
 
             # Phase 3: Audio Generation
             logger.info("=" * 50)
             logger.info("PHASE 3: Audio Generation")
             logger.info("=" * 50)
+
+            self._write_status(
+                "processing",
+                0.5,
+                "Starting audio generation",
+                active_phase="phase_3",
+                phase_status="processing",
+                phase_progress=0.0,
+                phase_message="Starting audio generation"
+            )
 
             audio_results = self._run_phase_3(story_analysis)
 
@@ -134,12 +192,30 @@ class MangaPipeline:
                     for a in audio_results
                 ]
             }
-            self._write_status("processing", 0.75, "Audio generation complete")
+            self._write_status(
+                "processing",
+                0.75,
+                "Audio generation complete",
+                active_phase="phase_3",
+                phase_status="completed",
+                phase_progress=1.0,
+                phase_message="Audio generation complete"
+            )
 
             # Phase 4: Video Assembly
             logger.info("=" * 50)
             logger.info("PHASE 4: Video Assembly")
             logger.info("=" * 50)
+
+            self._write_status(
+                "processing",
+                0.75,
+                "Starting video assembly",
+                active_phase="phase_4",
+                phase_status="processing",
+                phase_progress=0.0,
+                phase_message="Starting video assembly"
+            )
 
             video_results = self._run_phase_4(
                 story_analysis,
@@ -162,7 +238,11 @@ class MangaPipeline:
 
             results["status"] = "completed"
             results["video_paths"] = [str(v.video_path) for v in video_results]
-            self._write_status("completed", 1.0, "Pipeline complete")
+            self._write_status(
+                "completed",
+                1.0,
+                "Pipeline complete"
+            )
 
             logger.info("=" * 50)
             logger.info("PIPELINE COMPLETE!")
@@ -187,6 +267,15 @@ class MangaPipeline:
         """Execute Phase 1: PDF processing and panel extraction."""
 
         # PDF to Pages
+        self._write_status(
+            "processing",
+            0.05,
+            "Converting PDF to page images",
+            active_phase="phase_1",
+            phase_status="processing",
+            phase_progress=0.05,
+            phase_message="Converting PDF to page images"
+        )
         pdf_processor = PDFProcessor(
             output_dir=self.job_workspace / "pages",
             dpi=config.PDF_DPI
@@ -199,21 +288,37 @@ class MangaPipeline:
         )
         panel_paths = []
         for i, page_path in enumerate(page_paths, start=1):
+            page_progress = i / len(page_paths)
             self._write_status(
                 "processing",
-                0.05 + 0.15 * (i / len(page_paths)),
-                f"Extracting panels from page {i}/{len(page_paths)}"
+                0.05 + 0.15 * page_progress,
+                f"Extracting panels from page {i}/{len(page_paths)}",
+                active_phase="phase_1",
+                phase_status="processing",
+                phase_progress=0.05 + 0.85 * page_progress,
+                phase_message=f"Extracting panels from page {i}/{len(page_paths)}"
             )
             panels = panel_extractor.extract_panels_from_page(
                 page_path, i, self.job_workspace / "panels"
             )
             panel_paths.extend([p.path for p in panels])
 
-        # Renumber panels globally
-        for i, panel_path in enumerate(panel_paths, start=1):
+        # Rename to intermediate unique UUID names first to avoid collisions
+        temp_renamed = []
+        import uuid
+        for panel_path in panel_paths:
+            temp_name = f"rename_temp_{uuid.uuid4().hex}.png"
+            temp_path = panel_path.parent / temp_name
+            panel_path.rename(temp_path)
+            temp_renamed.append(temp_path)
+
+        # Renumber panels globally from intermediate names
+        for i, temp_path in enumerate(temp_renamed, start=1):
             new_name = f"panel_P{i}.png"
-            new_path = panel_path.parent / new_name
-            panel_path.rename(new_path)
+            new_path = temp_path.parent / new_name
+            if new_path.exists():
+                new_path.unlink()
+            temp_path.rename(new_path)
 
         # Reload updated paths
         panel_paths = sorted(
@@ -225,7 +330,11 @@ class MangaPipeline:
         self._write_status(
             "processing",
             0.20,
-            "Generating panel contact sheets"
+            "Generating panel contact sheets",
+            active_phase="phase_1",
+            phase_status="processing",
+            phase_progress=0.95,
+            phase_message="Generating panel contact sheets"
         )
         contact_gen = ContactSheetGenerator()
         contact_sheet_paths = contact_gen.generate_contact_sheet(
@@ -242,7 +351,15 @@ class MangaPipeline:
         total_panels: int
     ) -> StoryAnalysis:
         """Execute Phase 2: LLM story analysis."""
-
+        self._write_status(
+            "processing",
+            0.30,
+            "Analyzing story structure with LLM",
+            active_phase="phase_2",
+            phase_status="processing",
+            phase_progress=0.2,
+            phase_message="Analyzing story structure with LLM"
+        )
         try:
             llm_director = LLMStoryDirector(provider=self.llm_provider)
             story_analysis = llm_director.analyze_manga(
@@ -270,7 +387,6 @@ class MangaPipeline:
         story_analysis: StoryAnalysis
     ) -> list:
         """Execute Phase 3: Audio generation."""
-
         audio_gen = AudioGenerator(
             output_dir=self.job_workspace / "audio"
         )
@@ -280,7 +396,22 @@ class MangaPipeline:
             for part in story_analysis.parts
         ]
 
-        audio_results = asyncio.run(audio_gen.generate_all_audio(scripts))
+        audio_results = []
+        total_parts = len(scripts)
+        for idx, (part_number, script) in enumerate(scripts, start=1):
+            self._write_status(
+                "processing",
+                0.50 + 0.25 * ((idx - 1) / total_parts),
+                f"Generating voiceover for part {part_number}/{total_parts}",
+                active_phase="phase_3",
+                phase_status="processing",
+                phase_progress=(idx - 1) / total_parts,
+                phase_message=f"Generating voiceover for part {part_number}/{total_parts}"
+            )
+            result = audio_gen.generate_audio_sync(script, part_number)
+            audio_results.append(result)
+
+        audio_results.sort(key=lambda x: x.part_number)
 
         return audio_results
 
@@ -326,7 +457,11 @@ class MangaPipeline:
             self._write_status(
                 "processing",
                 0.75 + 0.20 * ((i - 1) / len(video_configs)),
-                f"Assembling video part {i}/{len(video_configs)}"
+                f"Assembling video part {i}/{len(video_configs)}",
+                active_phase="phase_4",
+                phase_status="processing",
+                phase_progress=(i - 1) / len(video_configs),
+                phase_message=f"Assembling video part {i}/{len(video_configs)}"
             )
             result = video_assembler.assemble_video(config)
             video_results.append(result)
@@ -384,20 +519,67 @@ class MangaPipeline:
         progress: float,
         message: str,
         *,
+        active_phase: Optional[str] = None,
+        phase_status: Optional[str] = None,
+        phase_progress: Optional[float] = None,
+        phase_message: Optional[str] = None,
         error: Optional[str] = None
     ) -> None:
         """Persist a lightweight status file for filesystem-based polling."""
-        if not self.job_workspace or not self.job_id:
-            return
+        if active_phase:
+            if phase_status is not None:
+                setattr(self, f"{active_phase}_status", phase_status)
+            if phase_progress is not None:
+                setattr(self, f"{active_phase}_progress", phase_progress)
+            if phase_message is not None:
+                setattr(self, f"{active_phase}_message", phase_message)
 
+        # Build payload
         payload = {
             "job_id": self.job_id,
             "status": status,
             "progress": progress,
             "message": message,
+            "phase_1_status": "completed" if status == "completed" else self.phase_1_status,
+            "phase_1_progress": 1.0 if status == "completed" else self.phase_1_progress,
+            "phase_1_message": self.phase_1_message if status != "completed" else "PDF converted and panels extracted",
+            "phase_2_status": "completed" if status == "completed" else self.phase_2_status,
+            "phase_2_progress": 1.0 if status == "completed" else self.phase_2_progress,
+            "phase_2_message": self.phase_2_message if status != "completed" else "Story analysis complete",
+            "phase_3_status": "completed" if status == "completed" else self.phase_3_status,
+            "phase_3_progress": 1.0 if status == "completed" else self.phase_3_progress,
+            "phase_3_message": self.phase_3_message if status != "completed" else "Audio generation complete",
+            "phase_4_status": "completed" if status == "completed" else self.phase_4_status,
+            "phase_4_progress": 1.0 if status == "completed" else self.phase_4_progress,
+            "phase_4_message": self.phase_4_message if status != "completed" else "Video assembly complete",
         }
+
         if error:
             payload["error_message"] = error
+            # If there's an active phase that failed, set it
+            if active_phase:
+                setattr(self, f"{active_phase}_status", "failed")
+                setattr(self, f"{active_phase}_message", f"Failed: {error}")
+            else:
+                for p in ["phase_1", "phase_2", "phase_3", "phase_4"]:
+                    if getattr(self, f"{p}_status") == "processing":
+                        setattr(self, f"{p}_status", "failed")
+                        setattr(self, f"{p}_message", f"Failed: {error}")
+            
+            # Refresh payload values with updated properties
+            payload.update({
+                "phase_1_status": self.phase_1_status,
+                "phase_1_message": self.phase_1_message,
+                "phase_2_status": self.phase_2_status,
+                "phase_2_message": self.phase_2_message,
+                "phase_3_status": self.phase_3_status,
+                "phase_3_message": self.phase_3_message,
+                "phase_4_status": self.phase_4_status,
+                "phase_4_message": self.phase_4_message,
+            })
+
+        if not self.job_workspace or not self.job_id:
+            return
 
         try:
             status_file = self.job_workspace / "status.json"
