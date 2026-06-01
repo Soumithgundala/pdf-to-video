@@ -38,7 +38,7 @@ export async function processJob(jobId: string): Promise<void> {
   }
 }
 
-export async function getJobStatus(jobId: string): Promise<{ status: string; progress: number }> {
+export async function getJobStatus(jobId: string): Promise<any> {
   const response = await fetch(`${API_URL}/api/jobs/${jobId}/status`, {
     headers: {
       'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,

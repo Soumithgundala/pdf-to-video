@@ -1,7 +1,10 @@
 # ========================
 # Node / Frontend (React/Vite)
 # ========================
-.env
+.env.example
+repomix-output.xml
+.gitinore
+
 node_modules/
 dist/
 dist-ssr/

@@ -1,5 +1,5 @@
 {
-  "python.defaultInterpreterPath": "C:\\Users\\soumi\\AppData\\Local\\Programs\\Python\\Python313\\python.exe",
+  "python.defaultInterpreterPath": "${workspaceFolder}/backend/venv/Scripts/python.exe",
   "python.analysis.extraPaths": [
     "backend"
   ]
