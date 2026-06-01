@@ -4,7 +4,7 @@
 .env.example
 repomix-output.xml
 .gitinore
-
+.env
 node_modules/
 dist/
 dist-ssr/
