@@ -25,6 +25,18 @@ interface JobState {
   total_pages?: number;
   total_panels?: number;
   error_message?: string;
+  phase_1_status?: string;
+  phase_1_progress?: number;
+  phase_1_message?: string;
+  phase_2_status?: string;
+  phase_2_progress?: number;
+  phase_2_message?: string;
+  phase_3_status?: string;
+  phase_3_progress?: number;
+  phase_3_message?: string;
+  phase_4_status?: string;
+  phase_4_progress?: number;
+  phase_4_message?: string;
 }
 
 export function JobTracker({ jobId, onReset }: JobTrackerProps) {
@@ -129,6 +141,74 @@ export function JobTracker({ jobId, onReset }: JobTrackerProps) {
   const status = job?.status ?? 'processing';
   const progress = (job?.progress ?? 0) * 100;
 
+  const phases = [
+    {
+      id: 'phase_1',
+      title: 'Phase 1: PDF Processing & Panel Extraction',
+      status: job?.phase_1_status || 'pending',
+      progress: job?.phase_1_progress || 0,
+      message: job?.phase_1_message,
+      pendingMsg: 'Phase 1 is pending',
+      completedMsg: 'Phase 1 is completed',
+    },
+    {
+      id: 'phase_2',
+      title: 'Phase 2: LLM Story Director',
+      status: job?.phase_2_status || 'pending',
+      progress: job?.phase_2_progress || 0,
+      message: job?.phase_2_message,
+      pendingMsg: 'Phase 2 is pending',
+      completedMsg: 'Phase 2 is completed',
+    },
+    {
+      id: 'phase_3',
+      title: 'Phase 3: Audio Generation',
+      status: job?.phase_3_status || 'pending',
+      progress: job?.phase_3_progress || 0,
+      message: job?.phase_3_message,
+      pendingMsg: 'Phase 3 is pending',
+      completedMsg: 'Phase 3 is completed',
+    },
+    {
+      id: 'phase_4',
+      title: 'Phase 4: Video Assembly',
+      status: job?.phase_4_status || 'pending',
+      progress: job?.phase_4_progress || 0,
+      message: job?.phase_4_message,
+      pendingMsg: 'Phase 4 is pending',
+      completedMsg: 'Phase 4 is completed',
+    },
+  ];
+
+  const getPhaseIcon = (phaseStatus: string) => {
+    switch (phaseStatus) {
+      case 'completed':
+        return (
+          <div className="flex items-center justify-center w-8 h-8 rounded-full bg-emerald-950/80 border border-emerald-500 text-emerald-400 z-10">
+            <CheckCircle className="w-4 h-4" />
+          </div>
+        );
+      case 'processing':
+        return (
+          <div className="flex items-center justify-center w-8 h-8 rounded-full bg-cyan-950/80 border border-cyan-500 text-cyan-400 animate-pulse z-10">
+            <Loader2 className="w-4 h-4 animate-spin" />
+          </div>
+        );
+      case 'failed':
+        return (
+          <div className="flex items-center justify-center w-8 h-8 rounded-full bg-red-950/80 border border-red-500 text-red-400 z-10">
+            <XCircle className="w-4 h-4" />
+          </div>
+        );
+      default:
+        return (
+          <div className="flex items-center justify-center w-8 h-8 rounded-full bg-slate-900 border border-slate-800 text-slate-500 z-10">
+            <Clock className="w-4 h-4" />
+          </div>
+        );
+    }
+  };
+
   return (
     <div className="space-y-8">
       {/* Job Overview */}
@@ -184,6 +264,78 @@ export function JobTracker({ jobId, onReset }: JobTrackerProps) {
           </div>
         )}
       </div>
+
+      {/* Pipeline Stages Card */}
+      {(status === 'processing' || status === 'completed' || status === 'failed') && (
+        <div className="bg-slate-900 rounded-2xl p-6 border border-slate-800 space-y-6">
+          <h3 className="text-lg font-semibold text-white">Pipeline Execution Stages</h3>
+          <div className="relative border-l border-slate-800 ml-4 pl-6 space-y-8 py-2">
+            {phases.map((phase, idx) => {
+              const isActive = phase.status === 'processing';
+              const isDone = phase.status === 'completed';
+              const isFailed = phase.status === 'failed';
+
+              let displayMsg = '';
+              if (isDone) {
+                displayMsg = phase.completedMsg;
+              } else if (isActive) {
+                displayMsg = phase.message || 'Processing…';
+              } else if (isFailed) {
+                displayMsg = phase.message || 'Failed';
+              } else {
+                displayMsg = phase.pendingMsg;
+              }
+
+              return (
+                <div key={phase.id} className="relative flex items-start gap-4">
+                  {/* Left Connector Line */}
+                  {idx < phases.length - 1 && (
+                    <div
+                      className={`absolute left-4 top-8 bottom-0 w-0.5 -ml-[1px] ${
+                        isDone ? 'bg-emerald-500' : isActive ? 'bg-slate-800' : 'bg-slate-800'
+                      }`}
+                      style={{ height: 'calc(100% + 2rem)' }}
+                    />
+                  )}
+
+                  {/* Icon */}
+                  {getPhaseIcon(phase.status)}
+
+                  {/* Content */}
+                  <div className="flex-1 min-w-0 pt-0.5 space-y-1">
+                    <h4 className={`text-sm font-semibold transition-colors duration-300 ${
+                      isActive ? 'text-cyan-400' : isDone ? 'text-slate-200' : 'text-slate-400'
+                    }`}>
+                      {phase.title}
+                    </h4>
+
+                    <p className={`text-xs ${
+                      isActive ? 'text-cyan-400 animate-pulse font-medium' : isDone ? 'text-emerald-400 font-medium' : isFailed ? 'text-red-400 font-medium' : 'text-slate-500'
+                    }`}>
+                      {displayMsg}
+                    </p>
+
+                    {/* Progress Bar (Only show if processing and has progress > 0) */}
+                    {isActive && phase.progress > 0 && (
+                      <div className="mt-2 max-w-md">
+                        <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                          <div
+                            className="h-full bg-gradient-to-r from-cyan-500 to-blue-500 rounded-full transition-all duration-300"
+                            style={{ width: `${phase.progress * 100}%` }}
+                          />
+                        </div>
+                        <span className="text-[10px] text-slate-400">
+                          {Math.round(phase.progress * 100)}% complete
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Video players — shown when completed */}
       {status === 'completed' && (
