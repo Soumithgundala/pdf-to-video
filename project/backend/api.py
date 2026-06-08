@@ -156,9 +156,16 @@ if config.SUPABASE_ENABLED:
         supabase = None
 else:
     logger.info(
-        "Supabase disabled: missing a distinct service-role key; using local filesystem status only"
+        "Supabase disabled: missing a distinct service-role key; using local filesystem/SQLite status only"
     )
     supabase = None
+
+# Initialize SQLite database
+try:
+    import database
+    database.init_db()
+except Exception as db_init_err:
+    logger.error(f"Failed to initialize SQLite database: {db_init_err}")
 
 # Workspace
 WORKSPACE_DIR = Path(config.WORKSPACE_DIR)
@@ -226,7 +233,7 @@ async def upload_pdf(file: UploadFile = File(...)):
         shutil.rmtree(job_dir)
         raise HTTPException(status_code=400, detail="Invalid or corrupted PDF file")
 
-    # Create job record in Supabase
+    # Create job record
     if supabase:
         try:
             supabase.table("jobs").insert({
@@ -236,7 +243,13 @@ async def upload_pdf(file: UploadFile = File(...)):
                 "pdf_path": str(pdf_path)
             }).execute()
         except Exception as e:
-            logger.error(f"Failed to create job record: {e}")
+            logger.error(f"Failed to create job record in Supabase: {e}")
+    else:
+        try:
+            import database
+            database.insert_job(job_id, file.filename, str(pdf_path))
+        except Exception as e:
+            logger.error(f"Failed to create job record in SQLite: {e}")
 
     logger.info(f"Uploaded PDF: {file.filename} -> job {job_id}")
 
@@ -260,6 +273,12 @@ async def process_job(
             job = result.data if result else None
         except Exception as e:
             logger.warning(f"Could not fetch job from Supabase: {e}")
+    else:
+        try:
+            import database
+            job = database.get_job(job_id)
+        except Exception as e:
+            logger.warning(f"Could not fetch job from SQLite: {e}")
 
     if job is None:
         # Fallback: check filesystem (covers Supabase insert failures too)
@@ -280,6 +299,12 @@ async def process_job(
             }).eq("id", job_id).execute()
         except Exception as e:
             logger.warning(f"Could not update job status: {e}")
+    elif job:
+        try:
+            import database
+            database.update_job(job_id, status="processing")
+        except Exception as e:
+            logger.warning(f"Could not update job status in SQLite: {e}")
 
     # Start background processing
     background_tasks.add_task(
@@ -328,13 +353,37 @@ def run_pipeline(job_id: str, pdf_path: Path, llm_provider: str):
                     "video_path": video["path"],
                     "status": "completed"
                 }).execute()
+        else:
+            try:
+                import database
+                database.update_job(
+                    job_id,
+                    status="completed",
+                    total_pages=results["phases"]["phase_1"]["pages"],
+                    total_panels=results["phases"]["phase_1"]["panels"],
+                    completed_at=datetime.utcnow().isoformat()
+                )
+
+                for video in results["phases"]["phase_4"]["videos"]:
+                    audio_info = results["phases"]["phase_3"]["audio_files"][video["part"] - 1]
+                    database.insert_video_part(
+                        job_id=job_id,
+                        part_number=video["part"],
+                        script="Script placeholder",
+                        selected_panels=[],
+                        audio_path=audio_info["path"],
+                        audio_duration_ms=audio_info["duration_ms"],
+                        video_path=video["path"]
+                    )
+            except Exception as db_err:
+                logger.error(f"Failed to update job record in SQLite: {db_err}")
 
         logger.info(f"Pipeline completed for job {job_id}")
 
     except Exception as e:
         logger.error(f"Pipeline failed for job {job_id}: {e}")
 
-        # Update Supabase to "failed" so the frontend stops polling
+        # Update status to "failed" so the frontend stops polling
         if supabase:
             try:
                 supabase.table("jobs").update({
@@ -344,6 +393,16 @@ def run_pipeline(job_id: str, pdf_path: Path, llm_provider: str):
                 }).eq("id", job_id).execute()
             except Exception as db_err:
                 logger.error(f"Could not update job status in DB: {db_err}")
+        else:
+            try:
+                import database
+                database.update_job(
+                    job_id,
+                    status="failed",
+                    error_message=str(e)
+                )
+            except Exception as db_err:
+                logger.error(f"Could not update job status in SQLite: {db_err}")
 
         # Filesystem fallback: write status.json so the status endpoint
         # can return "failed" even when Supabase is unavailable.
@@ -372,6 +431,12 @@ async def get_job_status(job_id: str):
             db_job = result.data if result else None
         except Exception as e:
             logger.warning(f"Could not fetch status from Supabase: {e}")
+    else:
+        try:
+            import database
+            db_job = database.get_job(job_id)
+        except Exception as e:
+            pass
 
     # Check for status file written by pipeline
     job_workspace = WORKSPACE_DIR / job_id
@@ -528,23 +593,35 @@ async def get_video(job_id: str, part_number: int, request: Request):
 @app.get("/api/jobs/{job_id}")
 async def get_job(job_id: str):
     """Get full job details."""
+    job = None
+    video_parts = []
+
     if supabase:
-        job_result = supabase.table("jobs").select("*").eq("id", job_id).single().execute()
-        job = job_result.data
+        try:
+            job_result = supabase.table("jobs").select("*").eq("id", job_id).single().execute()
+            job = job_result.data
+            if job:
+                parts_result = supabase.table("video_parts").select("*").eq("job_id", job_id).execute()
+                video_parts = parts_result.data or []
+        except Exception as e:
+            logger.warning(f"Could not fetch job details from Supabase: {e}")
 
-        if not job:
-            raise HTTPException(status_code=404, detail="Job not found")
+    if not job:
+        try:
+            import database
+            job = database.get_job(job_id)
+            if job:
+                video_parts = database.get_video_parts(job_id)
+        except Exception as e:
+            logger.warning(f"Could not fetch job details from SQLite: {e}")
 
-        # Get video parts
-        parts_result = supabase.table("video_parts").select("*").eq("job_id", job_id).execute()
-        video_parts = parts_result.data or []
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
 
-        return {
-            "job": job,
-            "video_parts": video_parts
-        }
-
-    raise HTTPException(status_code=503, detail="Database not configured")
+    return {
+        "job": job,
+        "video_parts": video_parts
+    }
 
 
 if __name__ == "__main__":

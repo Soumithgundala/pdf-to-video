@@ -495,7 +495,7 @@ class MangaPipeline:
 
             selected = selected[:7]  # Max 7 panels
 
-            script = f"This is part {i+1} of the manga recap. The story continues with exciting developments as our protagonist faces new challenges. Watch as the narrative unfolds across these carefully selected panels that capture the essence of this chapter."
+            script = "The crew navigates the treacherous waters of the Grand Line, where tension escalates as mysterious shadows loom ahead. The straw hats brace themselves for a major confrontation, analyzing every detail and movement of their adversaries, setting the stage for a dramatic clash of ideals and power."
 
             parts.append(VideoScript(
                 part_number=i + 1,

@@ -154,12 +154,12 @@ class VideoAssembler:
         with tempfile.TemporaryDirectory() as tmpdir:
             temp_out = Path(tmpdir) / "test_nvenc.mp4"
             try:
-                # Generate a 1-second 64x64 video using h264_nvenc
+                # Generate a 1-second 320x240 video using h264_nvenc
                 cmd = [
                     app_config.FFMPEG_BINARY,
                     "-y",
                     "-f", "lavfi",
-                    "-i", "color=c=black:s=64x64:d=1",
+                    "-i", "color=c=black:s=320x240:d=1",
                     "-c:v", "h264_nvenc",
                     str(temp_out)
                 ]
@@ -355,6 +355,33 @@ class VideoAssembler:
             stop_event.set()
             watchdog.join(timeout=1)
 
+    def _kill_child_processes(self) -> None:
+        """Find and kill all child processes (like ffmpeg) of the current Python process."""
+        import os
+        import subprocess
+        current_pid = os.getpid()
+        logger.info("Attempting to kill child processes of parent PID %s", current_pid)
+        try:
+            # Query child processes using wmic
+            cmd = f"wmic process where (ParentProcessId={current_pid}) get ProcessId"
+            output = subprocess.check_output(cmd, shell=True, text=True)
+            pids = []
+            for line in output.splitlines():
+                val = line.strip()
+                if val.isdigit():
+                    pids.append(int(val))
+            
+            for pid in pids:
+                logger.warning("Terminating stalled child process PID %s", pid)
+                subprocess.run(f"taskkill /F /PID {pid}", shell=True, capture_output=True)
+        except Exception as e:
+            logger.error("Failed to kill child processes via wmic: %s", e)
+            # Fallback: kill all ffmpeg.exe processes
+            try:
+                subprocess.run("taskkill /F /IM ffmpeg.exe", shell=True, capture_output=True)
+            except Exception as e2:
+                logger.error("Fallback taskkill failed: %s", e2)
+
     def _watch_encode_progress(
         self,
         output_path: Path,
@@ -393,13 +420,15 @@ class VideoAssembler:
                     last_progress_time = time.monotonic()
                 else:
                     logger.critical(
-                        "Encoding part %s with %s stalled for %.0fs at %s bytes. Crashing backend.",
+                        "Encoding part %s with %s stalled for %.0fs at %s bytes. Killing ffmpeg subprocess to abort job gracefully.",
                         part_number,
                         codec,
                         stalled_for,
                         current_size
                     )
-                    os._exit(1)
+                    self._kill_child_processes()
+                    # Sleep briefly to ensure taskkill took effect
+                    time.sleep(2)
 
     def _calculate_panel_durations(
         self,
