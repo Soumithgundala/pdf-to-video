@@ -222,8 +222,12 @@ async def upload_pdf(file: UploadFile = File(...)):
 
     pdf_path = job_dir / "manga.pdf"
 
+    # Save file and calculate hash
+    import hashlib
+    content = await file.read()
+    pdf_hash = hashlib.sha256(content).hexdigest()
+
     with open(pdf_path, "wb") as f:
-        content = await file.read()
         f.write(content)
 
     # Validate PDF
@@ -240,14 +244,15 @@ async def upload_pdf(file: UploadFile = File(...)):
                 "id": job_id,
                 "status": "pending",
                 "pdf_filename": file.filename,
-                "pdf_path": str(pdf_path)
+                "pdf_path": str(pdf_path),
+                "pdf_hash": pdf_hash
             }).execute()
         except Exception as e:
             logger.error(f"Failed to create job record in Supabase: {e}")
     else:
         try:
             import database
-            database.insert_job(job_id, file.filename, str(pdf_path))
+            database.insert_job(job_id, file.filename, str(pdf_path), pdf_hash)
         except Exception as e:
             logger.error(f"Failed to create job record in SQLite: {e}")
 
@@ -324,8 +329,29 @@ def run_pipeline(job_id: str, pdf_path: Path, llm_provider: str):
     logger.info(f"Starting pipeline for job {job_id}")
 
     try:
+        # Check for cached runs of this PDF hash
+        cached_job_id = None
+        try:
+            import database
+            job = database.get_job(job_id)
+            if job:
+                pdf_hash = job.get("pdf_hash")
+                if pdf_hash:
+                    cached_job = database.find_completed_job_by_hash(pdf_hash)
+                    if cached_job:
+                        import config
+                        cached_ws = Path(config.WORKSPACE_DIR) / cached_job["id"]
+                        # Verify vital assets exist in cached workspace before skipping
+                        if (cached_ws / "story_analysis.json").exists() and \
+                           any((cached_ws / "panels").glob("panel_P*.png")) and \
+                           any((cached_ws / "audio").glob("part_*_voiceover.mp3")):
+                            cached_job_id = cached_job["id"]
+                            logger.info(f"Found valid cached job {cached_job_id} for PDF hash {pdf_hash}")
+        except Exception as cache_err:
+            logger.warning(f"Error checking cache: {cache_err}")
+
         pipeline = MangaPipeline(llm_provider=llm_provider)
-        results = pipeline.process(pdf_path, job_id)
+        results = pipeline.process(pdf_path, job_id, cached_job_id=cached_job_id)
 
         # Update job record
         if supabase:

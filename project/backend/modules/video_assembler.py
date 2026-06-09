@@ -8,7 +8,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict
 from dataclasses import dataclass
 import numpy as np
 from PIL import Image
@@ -28,6 +28,7 @@ try:
         concatenate_videoclips, concatenate_audioclips, ColorClip,
         TextClip, CompositeVideoClip
     )
+    import moviepy.video.fx as vfx
 except ImportError as e:
     logger.warning(f"Could not import moviepy: {e}")
     ImageClip = None
@@ -38,6 +39,7 @@ except ImportError as e:
     ColorClip = None
     TextClip = None
     CompositeVideoClip = None
+    vfx = None
 
 
 @dataclass
@@ -49,6 +51,7 @@ class VideoPartConfig:
     panels: List[Path]
     background_music_path: Optional[Path]
     output_path: Path
+    focus_areas: Optional[Dict[str, List[int]]] = None
 
 
 @dataclass
@@ -198,20 +201,45 @@ class VideoAssembler:
         # Create video clips for each panel
         video_clips = []
         current_time = 0
+        transition_duration = 0.3  # 300 ms crossfade transition
 
         for i, (panel_path, duration_ms) in enumerate(zip(config.panels, panel_durations)):
             duration_seconds = duration_ms / 1000
 
+            # Extend clip duration to account for transition overlaps
+            clip_duration = duration_seconds
+            if i < panels_count - 1 and panels_count > 1:
+                clip_duration += transition_duration
+
+            # Extract panel ID from filename (e.g. "P1" from "panel_P1.png")
+            import re
+            m = re.search(r'panel_(P\d+)', panel_path.name)
+            panel_id = m.group(1) if m else ""
+            
+            focus_box = None
+            if config.focus_areas and panel_id in config.focus_areas:
+                focus_box = config.focus_areas[panel_id]
+
             clip = self._create_panel_clip(
                 panel_path,
-                duration_seconds,
-                start_time=current_time
+                clip_duration,
+                start_time=current_time,
+                focus_box=focus_box
             )
+            
+            if i > 0 and vfx is not None:
+                clip = clip.with_effects([vfx.CrossFadeIn(transition_duration)])
+
             video_clips.append(clip)
+            
+            # Next clip starts with transition_duration overlap
             current_time += duration_seconds
 
-        # Concatenate all clips
-        final_video = concatenate_videoclips(video_clips, method="compose")
+        # Concatenate all clips with transition overlaps
+        if vfx is not None and panels_count > 1:
+            final_video = concatenate_videoclips(video_clips, method="compose", padding=-transition_duration)
+        else:
+            final_video = concatenate_videoclips(video_clips, method="compose")
 
         # Add audio
         final_video = self._add_audio(
@@ -458,9 +486,10 @@ class VideoAssembler:
         self,
         panel_path: Path,
         duration: float,
-        start_time: float = 0
+        start_time: float = 0,
+        focus_box: Optional[List[int]] = None
     ) -> ImageClip:
-        """Create a video clip for a single panel with Ken Burns effect."""
+        """Create a video clip for a single panel with Ken Burns effect centered on the focus box."""
         # Load image and scale to cover size once using OpenCV
         img = cv2.imread(str(panel_path))
         if img is None:
@@ -468,6 +497,27 @@ class VideoAssembler:
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
         h_orig, w_orig = img.shape[:2]
+        
+        # Calculate pixel coordinates for the focus center in original image
+        if focus_box and len(focus_box) == 4:
+            ymin, xmin, ymax, xmax = focus_box
+            ymin_px = int(ymin * h_orig / 1000)
+            xmin_px = int(xmin * w_orig / 1000)
+            ymax_px = int(ymax * h_orig / 1000)
+            xmax_px = int(xmax * w_orig / 1000)
+            
+            # Clamp focus box pixels to image bounds
+            ymin_px = max(0, min(ymin_px, h_orig))
+            xmin_px = max(0, min(xmin_px, w_orig))
+            ymax_px = max(ymin_px, min(ymax_px, h_orig))
+            xmax_px = max(xmin_px, min(xmax_px, w_orig))
+            
+            center_x = (xmin_px + xmax_px) // 2
+            center_y = (ymin_px + ymax_px) // 2
+        else:
+            center_x = w_orig // 2
+            center_y = h_orig // 2
+
         scale = self._get_resize_factor((w_orig, h_orig))
         new_w = int(w_orig * scale)
         new_h = int(h_orig * scale)
@@ -480,14 +530,21 @@ class VideoAssembler:
         effect_params = self.ken_burns.get_random_effect()
         target_w, target_h = self.resolution
 
+        # Project center coordinates to the resized image
+        resized_center_x = int(center_x * scale)
+        resized_center_y = int(center_y * scale)
+
         # Apply zoom effect
         def zoom_effect(get_frame, t):
             frame = get_frame(t)
             progress = t / duration
 
+            # Quadratic ease-in-out curve for organic acceleration/deceleration
+            eased_progress = 2 * progress * progress if progress < 0.5 else 1 - (-2 * progress + 2)**2 / 2
+
             current_zoom = effect_params["start_zoom"] + (
                 effect_params["end_zoom"] - effect_params["start_zoom"]
-            ) * progress
+            ) * eased_progress
 
             h, w = frame.shape[:2]
             new_h, new_w = int(h / current_zoom), int(w / current_zoom)
@@ -495,18 +552,30 @@ class VideoAssembler:
             new_h = min(new_h, h)
             new_w = min(new_w, w)
             
-            y_start = int((h - new_h) * (0.5 + effect_params["start_y"] * progress))
-            x_start = int((w - new_w) * (0.5 + effect_params["start_x"] * progress))
+            # Calculate base crop start to center on the focus center
+            x_start_base = resized_center_x - new_w // 2
+            y_start_base = resized_center_y - new_h // 2
             
-            y_start = max(0, min(y_start, h - new_h))
+            # Apply subtle pan relative to the focus center (limited to 10% of remaining slack)
+            pan_limit_x = int((w - new_w) * 0.1)
+            pan_limit_y = int((h - new_h) * 0.1)
+            
+            pan_x = int(effect_params["start_x"] * pan_limit_x * (1 - 2 * eased_progress))
+            pan_y = int(effect_params["start_y"] * pan_limit_y * (1 - 2 * eased_progress))
+            
+            x_start = x_start_base + pan_x
+            y_start = y_start_base + pan_y
+            
+            # Clamp crop window to valid frame bounds
             x_start = max(0, min(x_start, w - new_w))
+            y_start = max(0, min(y_start, h - new_h))
 
             cropped = frame[
                 y_start:y_start + new_h,
                 x_start:x_start + new_w
             ]
 
-            if cropped.shape[:2] != (h, w):
+            if cropped.shape[:2] != (target_h, target_w):
                 cropped = cv2.resize(cropped, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
 
             return cropped
@@ -537,7 +606,7 @@ class VideoAssembler:
         voiceover_path: Path,
         background_music_path: Optional[Path]
     ):
-        """Add voiceover and background music to video."""
+        """Add voiceover and background music to video with dynamic audio ducking."""
         # Load voiceover
         voiceover = AudioFileClip(str(voiceover_path))
 
@@ -546,7 +615,6 @@ class VideoAssembler:
         # Add background music if provided
         if background_music_path and background_music_path.exists():
             bg_music = AudioFileClip(str(background_music_path))
-            bg_music = bg_music.with_volume_scaled(self.background_music_volume)
 
             # Loop or trim to match video duration
             if bg_music.duration < video.duration:
@@ -555,6 +623,84 @@ class VideoAssembler:
                 bg_music = concatenate_audioclips([bg_music] * num_loops)
 
             bg_music = bg_music.subclipped(0, video.duration)
+
+            # Apply dynamic audio ducking
+            try:
+                # Set up low-resolution sampling of voiceover volume
+                fps = 1000  # 1kHz is plenty for volume envelope
+                voice_data = voiceover.to_soundarray(fps=fps)
+                
+                # Take absolute maximum across channels
+                if len(voice_data.shape) > 1 and voice_data.shape[1] > 1:
+                    voice_data = np.abs(voice_data).max(axis=1)
+                else:
+                    voice_data = np.abs(voice_data).flatten()
+                
+                # Calculate smoothed envelope using attack/decay tracking
+                envelope = np.zeros_like(voice_data)
+                current_max = 0.0
+                attack_decay = 0.1  # seconds
+                decay_factor = np.exp(-1.0 / (fps * attack_decay))
+                
+                # Forward decay pass
+                for idx in range(len(voice_data)):
+                    current_max = max(voice_data[idx], current_max * decay_factor)
+                    envelope[idx] = current_max
+                    
+                # Backward attack pass
+                current_max = 0.0
+                for idx in range(len(voice_data) - 1, -1, -1):
+                    current_max = max(envelope[idx], current_max * decay_factor)
+                    envelope[idx] = current_max
+
+                # Normalize envelope to [0.0, 1.0]
+                max_env = envelope.max()
+                if max_env > 0:
+                    envelope = envelope / max_env
+                
+                # Map envelope to ducking levels
+                normal_vol = self.background_music_volume
+                ducked_vol = max(0.01, normal_vol * 0.2)  # duck to 20% of normal volume
+                
+                threshold = 0.05
+                ducking_levels = np.where(envelope > threshold, ducked_vol, normal_vol)
+                
+                # Smooth ducking levels to avoid volume pops
+                smooth_window = int(0.15 * fps)
+                if smooth_window > 1:
+                    ducking_levels = np.convolve(
+                        ducking_levels, 
+                        np.ones(smooth_window) / smooth_window, 
+                        mode='same'
+                    )
+                
+                # Define volume scaling function
+                def vol_func(t):
+                    if isinstance(t, np.ndarray):
+                        indices = (t * fps).astype(int)
+                        indices = np.clip(indices, 0, len(ducking_levels) - 1)
+                        return ducking_levels[indices]
+                    else:
+                        idx = int(t * fps)
+                        idx = max(0, min(idx, len(ducking_levels) - 1))
+                        return ducking_levels[idx]
+
+                # Apply the volume scaling function using fl()
+                def fl_audio(gf, t):
+                    factor = vol_func(t)
+                    frame = gf(t)
+                    if isinstance(t, np.ndarray):
+                        if len(frame.shape) > 1 and frame.shape[1] > 1:
+                            return factor[:, None] * frame
+                        return factor * frame
+                    return factor * frame
+                
+                bg_music = bg_music.fl(fl_audio)
+                logger.info("Dynamic audio ducking applied to background music.")
+            except Exception as duck_err:
+                logger.warning(f"Failed to apply dynamic audio ducking: {duck_err}. Falling back to flat volume.")
+                bg_music = bg_music.with_volume_scaled(self.background_music_volume)
+
             audio_clips.append(bg_music)
 
         # Combine audio

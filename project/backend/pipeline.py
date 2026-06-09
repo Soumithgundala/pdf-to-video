@@ -64,7 +64,8 @@ class MangaPipeline:
         self,
         pdf_path: Path,
         job_id: str,
-        background_music_path: Optional[Path] = None
+        background_music_path: Optional[Path] = None,
+        cached_job_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Process a manga PDF through all pipeline phases.
@@ -73,6 +74,7 @@ class MangaPipeline:
             pdf_path: Path to the PDF file
             job_id: Unique job identifier
             background_music_path: Optional background music file
+            cached_job_id: Optional cached job ID to reuse assets from
 
         Returns:
             Dictionary with results and paths
@@ -99,108 +101,156 @@ class MangaPipeline:
         }
 
         try:
-            self._write_status(
-                "processing",
-                0.05,
-                "Preparing workspace",
-                active_phase="phase_1",
-                phase_status="processing",
-                phase_progress=0.0,
-                phase_message="Preparing workspace"
-            )
+            if cached_job_id:
+                logger.info(f"Fast-tracking job {job_id} by copying cached assets from job {cached_job_id}...")
+                self._write_status(
+                    "processing",
+                    0.70,
+                    "Loading cached pages, panels, and voiceover audio",
+                    active_phase="phase_4",
+                    phase_status="processing",
+                    phase_progress=0.0,
+                    phase_message="Loading cached assets"
+                )
+                
+                # Mark previous phases as completed
+                self.phase_1_status = "completed"
+                self.phase_1_progress = 1.0
+                self.phase_1_message = "PDF converted and panels extracted (cached)"
+                self.phase_2_status = "completed"
+                self.phase_2_progress = 1.0
+                self.phase_2_message = "Story analysis complete (cached)"
+                self.phase_3_status = "completed"
+                self.phase_3_progress = 1.0
+                self.phase_3_message = "Audio generation complete (cached)"
+                
+                panel_paths, story_analysis, audio_results = self.load_cached_assets(cached_job_id)
+                
+                results["phases"]["phase_1"] = {
+                    "status": "completed",
+                    "pages": 0,
+                    "panels": len(panel_paths),
+                    "contact_sheets": []
+                }
+                results["phases"]["phase_2"] = {
+                    "status": "completed",
+                    "story_parts": len(story_analysis.parts),
+                    "total_panels_selected": story_analysis.total_panels_selected
+                }
+                results["phases"]["phase_3"] = {
+                    "status": "completed",
+                    "audio_files": [
+                        {
+                            "part": a.part_number,
+                            "path": str(a.audio_path),
+                            "duration_ms": a.duration_ms
+                        }
+                        for a in audio_results
+                    ]
+                }
+            else:
+                self._write_status(
+                    "processing",
+                    0.05,
+                    "Preparing workspace",
+                    active_phase="phase_1",
+                    phase_status="processing",
+                    phase_progress=0.0,
+                    phase_message="Preparing workspace"
+                )
 
-            # Phase 1: PDF Processing & Panel Extraction
-            logger.info("=" * 50)
-            logger.info("PHASE 1: PDF Processing & Panel Extraction")
-            logger.info("=" * 50)
+                # Phase 1: PDF Processing & Panel Extraction
+                logger.info("=" * 50)
+                logger.info("PHASE 1: PDF Processing & Panel Extraction")
+                logger.info("=" * 50)
 
-            page_paths, panel_paths, contact_sheet_paths = self._run_phase_1(pdf_path)
+                page_paths, panel_paths, contact_sheet_paths, panels_pdf_path = self._run_phase_1(pdf_path)
 
-            results["phases"]["phase_1"] = {
-                "status": "completed",
-                "pages": len(page_paths),
-                "panels": len(panel_paths),
-                "contact_sheets": [str(p) for p in contact_sheet_paths]
-            }
-            self._write_status(
-                "processing",
-                0.25,
-                "PDF converted and panels extracted",
-                active_phase="phase_1",
-                phase_status="completed",
-                phase_progress=1.0,
-                phase_message="PDF converted and panels extracted"
-            )
+                results["phases"]["phase_1"] = {
+                    "status": "completed",
+                    "pages": len(page_paths),
+                    "panels": len(panel_paths),
+                    "contact_sheets": [str(p) for p in contact_sheet_paths]
+                }
+                self._write_status(
+                    "processing",
+                    0.25,
+                    "PDF converted and panels extracted",
+                    active_phase="phase_1",
+                    phase_status="completed",
+                    phase_progress=1.0,
+                    phase_message="PDF converted and panels extracted"
+                )
 
-            # Phase 2: LLM Story Director
-            logger.info("=" * 50)
-            logger.info("PHASE 2: LLM Story Director")
-            logger.info("=" * 50)
+                # Phase 2: LLM Story Director
+                logger.info("=" * 50)
+                logger.info("PHASE 2: LLM Story Director")
+                logger.info("=" * 50)
 
-            self._write_status(
-                "processing",
-                0.25,
-                "Starting story analysis",
-                active_phase="phase_2",
-                phase_status="processing",
-                phase_progress=0.0,
-                phase_message="Starting story analysis"
-            )
+                self._write_status(
+                    "processing",
+                    0.25,
+                    "Starting story analysis",
+                    active_phase="phase_2",
+                    phase_status="processing",
+                    phase_progress=0.0,
+                    phase_message="Starting story analysis"
+                )
 
-            story_analysis = self._run_phase_2(page_paths, contact_sheet_paths, len(panel_paths))
+                story_analysis = self._run_phase_2(page_paths, contact_sheet_paths, len(panel_paths), panels_pdf_path)
 
-            results["phases"]["phase_2"] = {
-                "status": "completed",
-                "story_parts": len(story_analysis.parts),
-                "total_panels_selected": story_analysis.total_panels_selected
-            }
-            self._write_status(
-                "processing",
-                0.5,
-                "Story analysis complete",
-                active_phase="phase_2",
-                phase_status="completed",
-                phase_progress=1.0,
-                phase_message="Story analysis complete"
-            )
+                results["phases"]["phase_2"] = {
+                    "status": "completed",
+                    "story_parts": len(story_analysis.parts),
+                    "total_panels_selected": story_analysis.total_panels_selected
+                }
+                self._write_status(
+                    "processing",
+                    0.5,
+                    "Story analysis complete",
+                    active_phase="phase_2",
+                    phase_status="completed",
+                    phase_progress=1.0,
+                    phase_message="Story analysis complete"
+                )
 
-            # Phase 3: Audio Generation
-            logger.info("=" * 50)
-            logger.info("PHASE 3: Audio Generation")
-            logger.info("=" * 50)
+                # Phase 3: Audio Generation
+                logger.info("=" * 50)
+                logger.info("PHASE 3: Audio Generation")
+                logger.info("=" * 50)
 
-            self._write_status(
-                "processing",
-                0.5,
-                "Starting audio generation",
-                active_phase="phase_3",
-                phase_status="processing",
-                phase_progress=0.0,
-                phase_message="Starting audio generation"
-            )
+                self._write_status(
+                    "processing",
+                    0.5,
+                    "Starting audio generation",
+                    active_phase="phase_3",
+                    phase_status="processing",
+                    phase_progress=0.0,
+                    phase_message="Starting audio generation"
+                )
 
-            audio_results = self._run_phase_3(story_analysis)
+                audio_results = self._run_phase_3(story_analysis)
 
-            results["phases"]["phase_3"] = {
-                "status": "completed",
-                "audio_files": [
-                    {
-                        "part": a.part_number,
-                        "path": str(a.audio_path),
-                        "duration_ms": a.duration_ms
-                    }
-                    for a in audio_results
-                ]
-            }
-            self._write_status(
-                "processing",
-                0.75,
-                "Audio generation complete",
-                active_phase="phase_3",
-                phase_status="completed",
-                phase_progress=1.0,
-                phase_message="Audio generation complete"
-            )
+                results["phases"]["phase_3"] = {
+                    "status": "completed",
+                    "audio_files": [
+                        {
+                            "part": a.part_number,
+                            "path": str(a.audio_path),
+                            "duration_ms": a.duration_ms
+                        }
+                        for a in audio_results
+                    ]
+                }
+                self._write_status(
+                    "processing",
+                    0.75,
+                    "Audio generation complete",
+                    active_phase="phase_3",
+                    phase_status="completed",
+                    phase_progress=1.0,
+                    phase_message="Audio generation complete"
+                )
 
             # Phase 4: Video Assembly
             logger.info("=" * 50)
@@ -263,7 +313,7 @@ class MangaPipeline:
     def _run_phase_1(
         self,
         pdf_path: Path
-    ) -> tuple[List[Path], List[Path], List[Path]]:
+    ) -> tuple[List[Path], List[Path], List[Path], Optional[Path]]:
         """Execute Phase 1: PDF processing and panel extraction."""
 
         # PDF to Pages
@@ -281,6 +331,9 @@ class MangaPipeline:
             dpi=config.PDF_DPI
         )
         page_paths = pdf_processor.convert_pdf_to_pages(pdf_path)
+        if len(page_paths) > 1:
+            logger.info("Skipping page 1 (first page) as it is the landing/marketing page.")
+            page_paths = page_paths[1:]
 
         # Panel Extraction
         panel_extractor = PanelExtractor(
@@ -342,13 +395,29 @@ class MangaPipeline:
             self.job_workspace / "contact_sheets" / "contact_sheet"
         )
 
-        return page_paths, panel_paths, contact_sheet_paths
+        # Compile panels to PDF
+        panels_pdf_path = self.job_workspace / "panels" / "extracted_panels.pdf"
+        try:
+            from PIL import Image
+            images = [Image.open(p).convert('RGB') for p in panel_paths]
+            if images:
+                images[0].save(panels_pdf_path, save_all=True, append_images=images[1:])
+                logger.info(f"Successfully compiled {len(panel_paths)} panels into PDF: {panels_pdf_path}")
+            else:
+                logger.warning("No panels found to compile to PDF")
+                panels_pdf_path = None
+        except Exception as pdf_err:
+            logger.error(f"Failed to compile panels to PDF: {pdf_err}")
+            panels_pdf_path = None
+
+        return page_paths, panel_paths, contact_sheet_paths, panels_pdf_path
 
     def _run_phase_2(
         self,
         page_paths: List[Path],
         contact_sheet_paths: List[Path],
-        total_panels: int
+        total_panels: int,
+        panels_pdf_path: Optional[Path] = None
     ) -> StoryAnalysis:
         """Execute Phase 2: LLM story analysis."""
         self._write_status(
@@ -365,7 +434,8 @@ class MangaPipeline:
             story_analysis = llm_director.analyze_manga(
                 page_paths,
                 contact_sheet_paths[0],
-                total_panels
+                total_panels,
+                panels_pdf_path=panels_pdf_path
             )
         except Exception as e:
             logger.warning(f"LLM story analysis or initialization failed: {e}")
@@ -388,6 +458,8 @@ class MangaPipeline:
     ) -> list:
         """Execute Phase 3: Audio generation."""
         audio_gen = AudioGenerator(
+            voice=config.TTS_VOICE,
+            rate=config.TTS_RATE,
             output_dir=self.job_workspace / "audio"
         )
 
@@ -448,7 +520,8 @@ class MangaPipeline:
                 audio_duration_ms=audio.duration_ms,
                 panels=part_panel_paths,
                 background_music_path=background_music_path,
-                output_path=self.job_workspace / "videos" / f"part_{part.part_number}.mp4"
+                output_path=self.job_workspace / "videos" / f"part_{part.part_number}.mp4",
+                focus_areas=getattr(story_analysis, "panel_focus_areas", {})
             )
             video_configs.append(video_config)
 
@@ -506,6 +579,64 @@ class MangaPipeline:
             current_panel = end_panel + 1
 
         return StoryAnalysis(parts=parts, total_panels_selected=sum(len(p.selected_panels) for p in parts))
+
+    def load_cached_assets(
+        self,
+        cached_job_id: str
+    ) -> tuple[List[Path], StoryAnalysis, list]:
+        """Copy cached panels, audio, and story analysis JSON into current workspace and load objects."""
+        cached_workspace = self.workspace_base / cached_job_id
+
+        # 1. Copy panels directory
+        shutil.copytree(
+            cached_workspace / "panels",
+            self.job_workspace / "panels",
+            dirs_exist_ok=True
+        )
+
+        # 2. Copy audio directory
+        shutil.copytree(
+            cached_workspace / "audio",
+            self.job_workspace / "audio",
+            dirs_exist_ok=True
+        )
+
+        # 3. Copy story_analysis.json
+        shutil.copy2(
+            cached_workspace / "story_analysis.json",
+            self.job_workspace / "story_analysis.json"
+        )
+
+        # 4. Load panel paths
+        panel_paths = sorted(
+            (self.job_workspace / "panels").glob("panel_P*.png"),
+            key=lambda p: int(p.stem.split('P')[1]) if p.stem.split('P')[1].isdigit() else 0
+        )
+
+        # 5. Load story analysis object
+        with open(self.job_workspace / "story_analysis.json", "r", encoding="utf-8") as f:
+            data = json.load(f)
+            story_analysis = StoryAnalysis.from_dict(data)
+
+        # 6. Reconstruct Audio Results
+        from modules.audio_generator import GeneratedAudio
+        from mutagen.mp3 import MP3
+        audio_results = []
+        for part in story_analysis.parts:
+            audio_path = self.job_workspace / "audio" / f"part_{part.part_number}_voiceover.mp3"
+            try:
+                audio = MP3(str(audio_path))
+                duration_ms = int(audio.info.length * 1000)
+            except Exception:
+                duration_ms = 40000
+            audio_results.append(GeneratedAudio(
+                part_number=part.part_number,
+                audio_path=audio_path,
+                duration_ms=duration_ms,
+                script=part.script
+            ))
+
+        return panel_paths, story_analysis, audio_results
 
     def cleanup(self):
         """Clean up workspace."""
