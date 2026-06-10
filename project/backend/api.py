@@ -113,7 +113,7 @@ def _infer_filesystem_status(job_id: str) -> dict:
     panels_dir = job_workspace / "panels"
     pages_dir = job_workspace / "pages"
 
-    video_parts = [videos_dir / f"part_{part}.mp4" for part in range(1, 5)]
+    video_parts = [videos_dir / f"part_{part}.mp4" for part in range(1, 4)]
 
     if all(_is_playable_video(path) for path in video_parts):
         status, progress = "completed", 1.0

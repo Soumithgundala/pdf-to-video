@@ -44,6 +44,7 @@ SUPABASE_ENABLED = bool(
 # LLM APIs
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
+GOOGLE_API_KEY_2 = os.getenv("GOOGLE_API_KEY2", "")
 
 # Video settings
 VIDEO_WIDTH = 1080

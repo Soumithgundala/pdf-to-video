@@ -722,7 +722,7 @@ class VideoAssembler:
             return video
 
         # Create end card
-        next_part = current_part + 1 if current_part < 4 else 1
+        next_part = current_part + 1 if current_part < 3 else 1
         text = f"Like for Part {next_part}"
 
         # Create text clip

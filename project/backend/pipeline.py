@@ -545,13 +545,13 @@ class MangaPipeline:
         """Generate mock story analysis when LLM is not available."""
         from modules import VideoScript
 
-        panels_per_part = total_panels // 4
-        remainder = total_panels % 4
+        panels_per_part = total_panels // 3
+        remainder = total_panels % 3
 
         parts = []
         current_panel = 1
 
-        for i in range(4):
+        for i in range(3):
             num_panels = panels_per_part + (1 if i < remainder else 0)
             num_panels = min(num_panels, 7)
             num_panels = max(num_panels, 5)

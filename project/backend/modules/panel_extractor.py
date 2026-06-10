@@ -153,10 +153,10 @@ class PanelExtractor:
             bboxes = self._contour_based_detection(image, H, W, min_area, max_area)
             logger.info("Contour detection: %d panels", len(bboxes))
 
-        # Strategy 3 – grid fallback
+        # Fallback: whole page as a single panel if smart detection yields nothing
         if len(bboxes) < self.MIN_PANELS:
-            bboxes = self._grid_fallback(image, H, W)
-            logger.info("Grid fallback: %d panels", len(bboxes))
+            logger.info("Failed to detect individual panels. Falling back to whole page intact.")
+            bboxes = [(0, 0, W, H)]
 
         # Cap to the largest MAX_PANELS
         if len(bboxes) > self.MAX_PANELS:
@@ -173,22 +173,22 @@ class PanelExtractor:
         self, image: np.ndarray, H: int, W: int, min_area: int
     ) -> List[Tuple[int, int, int, int]]:
         """
-        Find dark horizontal and vertical bands (panel borders) using
+        Find white horizontal and vertical bands (panel borders/gutters) using
         row/column mean brightness profiles.
         """
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-        # Row mean — very dark rows are panel gutters
+        # Row mean — white rows are panel gutters
         row_mean = np.mean(gray, axis=1).astype(np.float32)
-        # Col mean — very dark cols are panel gutters
+        # Col mean — white cols are panel gutters
         col_mean = np.mean(gray, axis=0).astype(np.float32)
 
-        # Find gutter rows (dark stripe across almost the full width)
+        # Find gutter rows (white stripe across almost the full width, using threshold of 235)
         h_cuts = self._find_cut_positions(row_mean, H, axis="row",
-                                           min_frac=0.10, dark_thresh=200)
-        # Find gutter cols
+                                           min_frac=0.10, white_thresh=235)
+        # Find gutter cols (white stripe across almost the full height)
         v_cuts = self._find_cut_positions(col_mean, W, axis="col",
-                                           min_frac=0.10, dark_thresh=200)
+                                           min_frac=0.10, white_thresh=235)
 
         # Build candidate rectangles from the grid of cuts
         row_ranges = self._cuts_to_ranges(h_cuts, H)
@@ -217,10 +217,10 @@ class PanelExtractor:
 
     def _find_cut_positions(
         self, profile: np.ndarray, length: int,
-        axis: str, min_frac: float, dark_thresh: float
+        axis: str, min_frac: float, white_thresh: float
     ) -> List[int]:
         """
-        Find positions of dark bands in a 1-D brightness profile.
+        Find positions of white bands (gutters) in a 1-D brightness profile.
         Returns center positions of each band, including synthetic boundaries
         at 0 and length.
         """
@@ -228,19 +228,19 @@ class PanelExtractor:
         kernel = np.ones(max(3, length // 200)) / max(3, length // 200)
         smoothed = np.convolve(profile, kernel, mode="same")
 
-        # A "dark band" is where mean brightness < dark_thresh
-        is_dark = smoothed < dark_thresh
+        # A "gutter band" is where mean brightness is high (mostly white paper)
+        is_white = smoothed > white_thresh
 
         cuts = [0]
         in_band = False
         band_start = 0
         min_band_width = max(2, int(length * 0.003))
 
-        for i, dark in enumerate(is_dark):
-            if dark and not in_band:
+        for i, white in enumerate(is_white):
+            if white and not in_band:
                 band_start = i
                 in_band = True
-            elif not dark and in_band:
+            elif not white and in_band:
                 band_width = i - band_start
                 if band_width >= min_band_width:
                     cuts.append((band_start + i) // 2)
@@ -317,17 +317,7 @@ class PanelExtractor:
     # Strategy 3: Grid fallback
     # ------------------------------------------------------------------
 
-    def _grid_fallback(self, image: np.ndarray, H: int, W: int) -> List[Tuple[int, int, int, int]]:
-        """Split the page into equal rows (2 or 3) as a last resort."""
-        rows = 3 if H > W else 2
-        row_h = H // rows
-        bboxes = []
-        for r in range(rows):
-            y0 = r * row_h
-            y1 = H if r == rows - 1 else (r + 1) * row_h
-            bboxes.append((0, y0, W, y1 - y0))
-        logger.info("Grid fallback: %d-row split", rows)
-        return bboxes
+    # _grid_fallback removed to avoid chopping panels blindly
 
     # ------------------------------------------------------------------
     # Non-max suppression

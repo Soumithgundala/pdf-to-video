@@ -130,6 +130,14 @@ class LLMStoryDirector:
                 if self.provider == "openai":
                     result = self._analyze_with_openai(page_images, contact_sheet, total_panels)
                 else:
+                    # Toggle key on attempt retry to bypass quota or rate limits
+                    if attempt % 2 == 1 and getattr(config, "GOOGLE_API_KEY_2", ""):
+                        logger.info("Using secondary Gemini API key (GOOGLE_API_KEY2) for this attempt...")
+                        self.client = genai.Client(api_key=config.GOOGLE_API_KEY_2)
+                    elif getattr(config, "GOOGLE_API_KEY", ""):
+                        logger.info("Using primary Gemini API key (GOOGLE_API_KEY) for this attempt...")
+                        self.client = genai.Client(api_key=config.GOOGLE_API_KEY)
+
                     result = self._analyze_with_gemini(page_images, contact_sheet, total_panels, panels_pdf_path)
 
                 # Verify minimum panels per part
@@ -298,8 +306,8 @@ Generate ONLY valid JSON output matching the required schema."""
 
     def _validate_result(self, result: StoryAnalysis, total_panels: int) -> None:
         """Validate that result meets requirements."""
-        if len(result.parts) != 4:
-            raise ValueError(f"Expected 4 video parts, got {len(result.parts)}")
+        if len(result.parts) != 3:
+            raise ValueError(f"Expected 3 video parts, got {len(result.parts)}")
 
         for part in result.parts:
             num_panels = len(part.selected_panels)
@@ -343,7 +351,7 @@ Generate ONLY valid JSON output matching the required schema."""
 
 You must:
 1. Read and understand the manga narrative from the provided pages.
-2. Divide the story into exactly 4 sequential parts.
+2. Divide the story into exactly 3 sequential parts.
 3. Write a dramatic, lore-rich voiceover script for each part (110-140 words).
 4. Select 5-7 panels from the manga pages that best illustrate each script.
 5. Identify the primary visual focus area (character's face, action scene, main subject) for EACH panel.
@@ -382,11 +390,11 @@ CRITICAL FORMAT RULES:
 
     def _get_user_prompt_text(self, total_panels: int) -> str:
         """Get user prompt text."""
-        return f"""Analyze this manga chapter and create a 4-part video recap script.
+        return f"""Analyze this manga chapter and create a 3-part video recap script.
 
 The document contains {total_panels} sequential panels with IDs P1 through P{total_panels}.
 
-For each of the 4 parts:
+For each of the 3 parts:
 1. Write a deep-dive, dramatic voiceover script (110-140 words) explaining the details of the actions, character expressions, dialogue, and narrative.
 2. Select 5-7 panels that best illustrate the script.
 3. For all {total_panels} panels, specify their primary focus area coordinates [ymin, xmin, ymax, xmax] in the panel_focus_areas dictionary.
