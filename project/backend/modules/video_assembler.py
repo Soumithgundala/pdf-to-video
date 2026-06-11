@@ -41,6 +41,55 @@ except ImportError as e:
     CompositeVideoClip = None
     vfx = None
 
+from typing import Any
+
+DEFAULT_ASSETS = {
+    "music": {
+        "sad_violin": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-8.mp3",
+        "upbeat_adventure": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3",
+        "dramatic": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3"
+    },
+    "sfx": {
+        "yohoho": "https://www.myinstants.com/media/sounds/yo-ho-ho.mp3",
+        "sword_clash": "https://www.soundboard.com/handler/DownLoadTrack.ashx?cliptrackid=274987"
+    }
+}
+
+def download_default_asset(asset_type: str, asset_name: str) -> Optional[Path]:
+    import urllib.request
+    
+    # Base directory for local assets
+    base_assets_dir = Path(__file__).parent.parent / "assets"
+    target_dir = base_assets_dir / asset_type
+    target_dir.mkdir(parents=True, exist_ok=True)
+    
+    target_path = target_dir / f"{asset_name}.mp3"
+    if target_path.exists() and target_path.stat().st_size > 0:
+        return target_path
+        
+    url = DEFAULT_ASSETS.get(asset_type, {}).get(asset_name)
+    if not url:
+        return None
+        
+    logger.info(f"Downloading default asset {asset_name} from {url}...")
+    try:
+        req = urllib.request.Request(
+            url,
+            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        )
+        with urllib.request.urlopen(req, timeout=10) as response, open(target_path, 'wb') as out_file:
+            out_file.write(response.read())
+        logger.info(f"Successfully downloaded {asset_name} to {target_path}")
+        return target_path
+    except Exception as e:
+        logger.warning(f"Failed to download default asset {asset_name} from {url}: {e}. Proceeding without this asset.")
+        if target_path.exists():
+            try:
+                target_path.unlink()
+            except Exception:
+                pass
+        return None
+
 
 @dataclass
 class VideoPartConfig:
@@ -52,6 +101,10 @@ class VideoPartConfig:
     background_music_path: Optional[Path]
     output_path: Path
     focus_areas: Optional[Dict[str, List[int]]] = None
+    script_segments: Optional[List[Dict[str, str]]] = None
+    word_boundaries: Optional[List[Dict[str, Any]]] = None
+    music_mood: Optional[str] = None
+    sound_effects: Optional[List[Dict[str, str]]] = None
 
 
 @dataclass
@@ -181,27 +234,54 @@ class VideoAssembler:
         config: VideoPartConfig
     ) -> GeneratedVideo:
         """
-        Assemble a single video part.
-
-        Args:
-            config: VideoPartConfig with all necessary paths and settings
-
-        Returns:
-            GeneratedVideo with result
+        Assemble a single video part with dynamic timing, captions, and SFX/music.
         """
         logger.info(f"Assembling video part {config.part_number}...")
 
+        # Resolve background music path based on music_mood if not provided
+        bg_music_path = config.background_music_path
+        if not bg_music_path and config.music_mood:
+            bg_music_path = download_default_asset("music", config.music_mood)
+
+        # Download SFX assets
+        sfx_list = []
+        if config.sound_effects:
+            for sfx in config.sound_effects:
+                sfx_name = sfx.get("effect")
+                panel_id = sfx.get("panel_id")
+                if sfx_name and panel_id:
+                    sfx_path = download_default_asset("sfx", sfx_name)
+                    if sfx_path:
+                        sfx_list.append((sfx_path, panel_id))
+
+        # Calculate precise video duration based on the end of the last word (plus 0.3s padding for natural cutoff)
+        # This completely eliminates trailing silence ("dead air") from the video.
+        if config.word_boundaries:
+            last_word_end = config.word_boundaries[-1]["start"] + config.word_boundaries[-1]["duration"]
+            target_duration = last_word_end + 0.3
+            logger.info(f"Target video duration set to {target_duration:.2f}s based on final word boundary (raw audio duration: {config.audio_duration_ms/1000.0:.2f}s)")
+        else:
+            target_duration = config.audio_duration_ms / 1000.0
+
         # Calculate timing for each panel
         panels_count = len(config.panels)
-        panel_durations = self._calculate_panel_durations(
-            config.audio_duration_ms,
-            panels_count
-        )
+        
+        # Check if we have word boundaries and segments to calculate dynamic durations
+        if config.word_boundaries and config.script_segments:
+            # We calculate dynamic durations in seconds, then convert to ms
+            durations_sec = self._calculate_dynamic_panel_durations(config, target_duration)
+            panel_durations = [int(d * 1000) for d in durations_sec]
+        else:
+            panel_durations = self._calculate_panel_durations(
+                int(target_duration * 1000),
+                panels_count
+            )
 
         # Create video clips for each panel
         video_clips = []
-        current_time = 0
+        current_time = 0.0
         transition_duration = 0.3  # 300 ms crossfade transition
+        panel_start_times = {}
 
         for i, (panel_path, duration_ms) in enumerate(zip(config.panels, panel_durations)):
             duration_seconds = duration_ms / 1000
@@ -214,7 +294,9 @@ class VideoAssembler:
             # Extract panel ID from filename (e.g. "P1" from "panel_P1.png")
             import re
             m = re.search(r'panel_(P\d+)', panel_path.name)
-            panel_id = m.group(1) if m else ""
+            panel_id = m.group(1) if m else f"P{i+1}"
+            
+            panel_start_times[panel_id] = current_time
             
             focus_box = None
             if config.focus_areas and panel_id in config.focus_areas:
@@ -241,21 +323,48 @@ class VideoAssembler:
         else:
             final_video = concatenate_videoclips(video_clips, method="compose")
 
+        # Mix sound effects with their calculated start times
+        mixed_sfx = []
+        for sfx_path, panel_id in sfx_list:
+            if panel_id in panel_start_times:
+                mixed_sfx.append((sfx_path, panel_start_times[panel_id]))
+
         # Add audio
-        final_video = self._add_audio(
+        final_video = self._add_audio_enhanced(
             final_video,
             config.voiceover_path,
-            config.background_music_path
+            bg_music_path,
+            mixed_sfx
         )
 
-        # Pad if needed to meet minimum duration
-        total_duration = final_video.duration
-        if total_duration < app_config.TARGET_AUDIO_DURATION_SECONDS:
-            final_video = self._add_end_card(
-                final_video,
-                config.part_number,
-                app_config.TARGET_AUDIO_DURATION_SECONDS
-            )
+        # Add captions/subtitles if word boundaries are present
+        if config.word_boundaries:
+            logger.info("Adding dynamic auto-captions to video...")
+            caption_clips = self._create_caption_clips(config)
+            if caption_clips:
+                final_video = CompositeVideoClip([final_video] + caption_clips)
+
+        # Add Outro Call to Action Overlay (Like for Part X) in the last 4 seconds
+        target_w, target_h = self.resolution
+        outro_duration = min(4.0, final_video.duration)
+        if outro_duration > 0:
+            next_part = config.part_number + 1 if config.part_number < 3 else 1
+            outro_words = [{"word": "Like"}, {"word": "for"}, {"word": f"Part {next_part}"}]
+            try:
+                outro_clip = self._create_rich_text_clip(
+                    phrase_words=outro_words,
+                    active_idx=2,
+                    font_name="arialbd",
+                    font_size=65,
+                    stroke_width=4.0,
+                    stroke_color=(0, 0, 0, 255),
+                    size=(target_w - 100, 200)
+                ).with_duration(outro_duration).with_start(final_video.duration - outro_duration).with_position(("center", 300))
+                
+                final_video = CompositeVideoClip([final_video, outro_clip])
+                logger.info(f"Added outro call to action: Like for Part {next_part}")
+            except Exception as outro_err:
+                logger.warning(f"Failed to create outro TextClip: {outro_err}")
 
         # Write output using the cached default codec (NVENC or CPU)
         output_path = config.output_path
@@ -482,6 +591,204 @@ class VideoAssembler:
 
         return durations
 
+    def _calculate_dynamic_panel_durations(self, config: VideoPartConfig, target_duration: float) -> List[float]:
+        panels_count = len(config.panels)
+        if panels_count == 0:
+            return []
+
+        # Fallback to even distribution if no word boundaries
+        if not config.word_boundaries or not config.script_segments:
+            logger.info("No word boundaries or script segments. Falling back to even panel duration distribution.")
+            durations_ms = self._calculate_panel_durations(
+                int(target_duration * 1000),
+                panels_count
+            )
+            return [d / 1000.0 for d in durations_ms]
+
+        # Map panel files to panel IDs
+        import re
+        panel_id_to_idx = {}
+        for idx, panel_path in enumerate(config.panels):
+            m = re.search(r'panel_(P\d+)', panel_path.name)
+            pid = m.group(1) if m else f"P{idx+1}"
+            panel_id_to_idx[pid] = idx
+
+        durations = [0.0] * panels_count
+        words = config.word_boundaries
+        word_idx = 0
+        total_words = len(words)
+        current_start = 0.0
+        
+        for seg_idx, segment in enumerate(config.script_segments):
+            pid = segment.get("panel_id")
+            text = segment.get("text", "")
+            p_idx = panel_id_to_idx.get(pid, seg_idx)
+            if p_idx >= panels_count:
+                p_idx = panels_count - 1
+                
+            seg_word_count = len(text.split())
+            if seg_word_count == 0:
+                continue
+                
+            seg_words = words[word_idx:word_idx + seg_word_count]
+            word_idx += seg_word_count
+            
+            if seg_words:
+                last_word = seg_words[-1]
+                current_end = last_word["start"] + last_word["duration"]
+            else:
+                current_end = current_start + 4.0
+                
+            if seg_idx == len(config.script_segments) - 1 and total_words > 0:
+                last_w = words[-1]
+                current_end = max(current_end, last_w["start"] + last_w["duration"])
+                
+            durations[p_idx] = max(1.5, current_end - current_start)
+            current_start = current_end
+            
+        for idx in range(panels_count):
+            if durations[idx] == 0.0:
+                durations[idx] = 4.0
+                
+        sum_durations = sum(durations)
+        if sum_durations > 0:
+            scale = target_duration / sum_durations
+            durations = [d * scale for d in durations]
+                
+        logger.info(f"Dynamic panel durations (seconds): {durations}")
+        return durations
+
+    def _group_words_into_phrases(self, word_boundaries: List[Dict[str, Any]], max_words: int = 4) -> List[List[Dict[str, Any]]]:
+        if not word_boundaries:
+            return []
+        phrases = []
+        current_phrase = []
+        for word in word_boundaries:
+            if not current_phrase:
+                current_phrase.append(word)
+                continue
+                
+            last_word = current_phrase[-1]
+            pause = word["start"] - (last_word["start"] + last_word["duration"])
+            
+            if len(current_phrase) >= max_words or pause > 0.3:
+                phrases.append(current_phrase)
+                current_phrase = [word]
+            else:
+                current_phrase.append(word)
+        if current_phrase:
+            phrases.append(current_phrase)
+        return phrases
+
+    def _create_rich_text_clip(
+        self,
+        phrase_words: List[Dict[str, Any]],
+        active_idx: Optional[int],
+        font_name: str,
+        font_size: int,
+        stroke_width: float,
+        stroke_color: tuple,
+        size: Tuple[int, int]
+    ) -> ImageClip:
+        """Create a transparent ImageClip of text with a highlighted active word using Pillow."""
+        from PIL import Image, ImageDraw, ImageFont
+        
+        width, height = size
+        img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(img)
+        
+        # Resolve font
+        try:
+            font = ImageFont.truetype(font_name, font_size)
+        except Exception:
+            try:
+                font = ImageFont.truetype(f"{font_name}.ttf", font_size)
+            except Exception:
+                font = ImageFont.load_default()
+                
+        # Calculate space width
+        space_bbox = draw.textbbox((0, 0), " ", font=font)
+        space_w = space_bbox[2] - space_bbox[0]
+        
+        # Calculate sizes of each word
+        word_sizes = []
+        total_w = 0
+        max_h = 0
+        for w in phrase_words:
+            text = w["word"]
+            bbox = draw.textbbox((0, 0), text, font=font)
+            w_width = bbox[2] - bbox[0]
+            w_height = bbox[3] - bbox[1]
+            word_sizes.append((w_width, w_height))
+            total_w += w_width
+            if w_height > max_h:
+                max_h = w_height
+                
+        total_w += space_w * (len(phrase_words) - 1)
+        
+        # Centering coordinates
+        x = (width - total_w) // 2
+        y = (height - max_h) // 2
+        
+        # Draw each word with its corresponding color
+        for idx, w in enumerate(phrase_words):
+            text = w["word"]
+            w_w, w_h = word_sizes[idx]
+            
+            if active_idx is not None and idx == active_idx:
+                color = (250, 204, 21, 255)  # Bright yellow
+            else:
+                color = (255, 255, 255, 255)  # White
+                
+            draw.text(
+                (x, y),
+                text,
+                font=font,
+                fill=color,
+                stroke_width=int(stroke_width),
+                stroke_fill=stroke_color
+            )
+            x += w_w + space_w
+            
+        return ImageClip(np.array(img), transparent=True)
+
+    def _create_caption_clips(self, config: VideoPartConfig) -> List[Any]:
+        if not config.word_boundaries:
+            return []
+            
+        phrases = self._group_words_into_phrases(config.word_boundaries)
+        caption_clips = []
+        target_w, target_h = self.resolution
+        
+        for phrase in phrases:
+            phrase_start = phrase[0]["start"]
+            phrase_end = phrase[-1]["start"] + phrase[-1]["duration"]
+            n_words = len(phrase)
+            
+            for idx, active_word in enumerate(phrase):
+                win_start = phrase_start if idx == 0 else active_word["start"]
+                win_end = phrase_end if idx == n_words - 1 else phrase[idx+1]["start"]
+                win_dur = win_end - win_start
+                if win_dur <= 0:
+                    continue
+                    
+                try:
+                    tc = self._create_rich_text_clip(
+                        phrase_words=phrase,
+                        active_idx=idx,
+                        font_name="arialbd",
+                        font_size=55,
+                        stroke_width=3.5,
+                        stroke_color=(0, 0, 0, 255),
+                        size=(target_w - 100, 300)
+                    ).with_duration(win_dur).with_start(win_start).with_position(("center", target_h - 450))
+                    
+                    caption_clips.append(tc)
+                except Exception as e:
+                    logger.warning(f"Failed to create caption TextClip: {e}")
+                    
+        return caption_clips
+
     def _create_panel_clip(
         self,
         panel_path: Path,
@@ -600,15 +907,18 @@ class VideoAssembler:
         # Use larger scale to ensure coverage
         return max(scale_w, scale_h)
 
-    def _add_audio(
+    def _add_audio_enhanced(
         self,
         video,
         voiceover_path: Path,
-        background_music_path: Optional[Path]
+        background_music_path: Optional[Path],
+        sfx_list: List[Tuple[Path, float]]
     ):
-        """Add voiceover and background music to video with dynamic audio ducking."""
-        # Load voiceover
+        """Add voiceover, background music with dynamic ducking, and sound effects to video."""
+        # Load voiceover and trim to match video duration (removing trailing dead silence)
         voiceover = AudioFileClip(str(voiceover_path))
+        if voiceover.duration > video.duration:
+            voiceover = voiceover.subclipped(0, video.duration)
 
         audio_clips = [voiceover]
 
@@ -702,6 +1012,19 @@ class VideoAssembler:
                 bg_music = bg_music.with_volume_scaled(self.background_music_volume)
 
             audio_clips.append(bg_music)
+
+        # Add sound effects
+        if sfx_list:
+            for sfx_path, sfx_start in sfx_list:
+                try:
+                    sfx_clip = AudioFileClip(str(sfx_path))
+                    # Clamp/trim sound effect if it exceeds video duration
+                    if sfx_start < video.duration:
+                        sfx_clip = sfx_clip.with_start(sfx_start)
+                        audio_clips.append(sfx_clip)
+                        logger.info(f"Mixed sound effect {sfx_path.name} at t={sfx_start}s")
+                except Exception as sfx_err:
+                    logger.warning(f"Failed to mix sound effect {sfx_path.name}: {sfx_err}")
 
         # Combine audio
         final_audio = CompositeAudioClip(audio_clips)

@@ -32,6 +32,9 @@ class VideoScript:
     part_number: int
     script: str
     selected_panels: List[str]
+    script_segments: Optional[List[Dict[str, str]]] = None
+    music_mood: Optional[str] = None
+    sound_effects: Optional[List[Dict[str, str]]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -41,7 +44,10 @@ class VideoScript:
         return cls(
             part_number=data['part_number'],
             script=data['script'],
-            selected_panels=data['selected_panels']
+            selected_panels=data['selected_panels'],
+            script_segments=data.get('script_segments'),
+            music_mood=data.get('music_mood'),
+            sound_effects=data.get('sound_effects')
         )
 
 
@@ -288,12 +294,38 @@ Generate ONLY valid JSON output matching the required schema."""
 
         parts = []
         for part_data in data.get('parts', []):
-            script = VideoScript(
+            segments = part_data.get('script_segments')
+            script = part_data.get('script', '')
+
+            # Reconstruct script from segments if script is missing
+            if not script and segments:
+                script = " ".join(seg.get('text', '') for seg in segments)
+
+            # Fallback segment generation if missing
+            if not segments and script:
+                import re as regex
+                sentences = [s.strip() for s in regex.split(r'(?<=[.!?])\s+', script) if s.strip()]
+                panels = part_data.get('selected_panels', [])
+                segments = []
+                if panels:
+                    for idx, panel in enumerate(panels):
+                        if idx == len(panels) - 1:
+                            text = " ".join(sentences[idx:])
+                        else:
+                            text = sentences[idx] if idx < len(sentences) else ""
+                        segments.append({"panel_id": panel, "text": text})
+                else:
+                    segments = [{"panel_id": "P1", "text": script}]
+
+            script_obj = VideoScript(
                 part_number=part_data['part_number'],
-                script=part_data['script'],
-                selected_panels=part_data['selected_panels']
+                script=script,
+                selected_panels=part_data.get('selected_panels', []),
+                script_segments=segments,
+                music_mood=part_data.get('music_mood', 'sad_violin'),
+                sound_effects=part_data.get('sound_effects', [])
             )
-            parts.append(script)
+            parts.append(script_obj)
 
         total_selected = sum(len(p.selected_panels) for p in parts)
         focus_areas = data.get('panel_focus_areas', {})
@@ -352,15 +384,16 @@ Generate ONLY valid JSON output matching the required schema."""
 You must:
 1. Read and understand the manga narrative from the provided pages.
 2. Divide the story into exactly 3 sequential parts.
-3. Write a dramatic, lore-rich voiceover script for each part (110-140 words).
-4. Select 5-7 panels from the manga pages that best illustrate each script.
+3. Write a dramatic, lore-rich voiceover script for each part, divided by selected panels. The total script of the part (all segments joined) must be between 110-140 words.
+4. Select 5-7 panels from the manga pages that best illustrate each part, and assign matching voiceover sentences to each.
 5. Identify the primary visual focus area (character's face, action scene, main subject) for EACH panel.
+6. Select an appropriate background music mood and optional sound effects.
 
 CRITICAL CONTENT & TONE RULES:
 - Target a smart, dedicated audience. Assume they know all the lore, terms (Haki, Devil Fruits, Will of D, etc.), and characters.
 - Explain the story deeply: describe the specific actions, character emotions, dialogue impact, and combat details in the panels.
 - Tone should be high-energy, exciting, and full of suspense, like an epic YouTube manga recap.
-- ABSOLUTELY DO NOT mention meta phrases like "part 1", "part 2", "in this part", "this is part...", "this video", "first", "next", or make any reference to the division of the video/chapters. Each script must read like a seamless, continuous, deep-dive narrative, flowing naturally into the next part as if it were one single video.
+- ABSOLUTELY DO NOT mention meta phrases like "part 1", "part 2", "in this part", "this is part...", "this video", "first", "next", or make any reference to the division of the video/chapters.
 - Avoid generic summaries; explain the actual events, character dialogue, and action sequences in the panels.
 
 Output a valid JSON object with this exact structure:
@@ -373,8 +406,24 @@ Output a valid JSON object with this exact structure:
   "parts": [
     {
       "part_number": 1,
-      "script": "The deep-dive voiceover text for this part...",
-      "selected_panels": ["P1", "P2", "P3", "P4", "P5"]
+      "script_segments": [
+        {
+          "panel_id": "P1",
+          "text": "The sentences matching panel P1..."
+        },
+        {
+          "panel_id": "P2",
+          "text": "The sentences matching panel P2..."
+        }
+      ],
+      "selected_panels": ["P1", "P2"],
+      "music_mood": "sad_violin" or "upbeat_adventure" or "dramatic",
+      "sound_effects": [
+        {
+          "panel_id": "P2",
+          "effect": "yohoho" or "sword_clash"
+        }
+      ]
     },
     ...
   ]
@@ -384,7 +433,9 @@ CRITICAL FORMAT RULES:
 - panel_focus_areas: For each panel P1, P2, ... up to P{total_panels}, detect the primary visual content/character/subject that must be visible in the video. Output the normalized bounding box [ymin, xmin, ymax, xmax] from 0 to 1000 (0 is top/left, 1000 is bottom/right).
 - Each part must have exactly 5-7 panels selected in reading order.
 - Panel IDs must match the sequential panel IDs (format: P1, P2, P3, etc.).
-- Each script should be 110-140 words for natural pacing (~60-70 seconds spoken).
+- script_segments: Provide script text split by panel. The joined script text across all segments must be 110-140 words for natural pacing (~60-70 seconds spoken).
+- music_mood: Choose "sad_violin" for emotional/dump scenes, "upbeat_adventure" for lively/comedic/action transitions, "dramatic" for heavy lore/revelations.
+- sound_effects: Add Brook's signature laugh "yohoho" or sword clashing "sword_clash" only if they match the action in the panel (optional).
 - DO NOT select the same panel multiple times across parts.
 - Each part must cover a distinct segment of the story in sequence."""
 
@@ -395,10 +446,11 @@ CRITICAL FORMAT RULES:
 The document contains {total_panels} sequential panels with IDs P1 through P{total_panels}.
 
 For each of the 3 parts:
-1. Write a deep-dive, dramatic voiceover script (110-140 words) explaining the details of the actions, character expressions, dialogue, and narrative.
-2. Select 5-7 panels that best illustrate the script.
-3. For all {total_panels} panels, specify their primary focus area coordinates [ymin, xmin, ymax, xmax] in the panel_focus_areas dictionary.
-4. Ensure the parts form a seamless, continuous story flow. Never mention "part 1", "part 2", or any part numbers.
-5. Keep the tone engaging and targeted at seasoned One Piece manga readers.
+1. Select 5-7 panels that best illustrate the narrative in sequence.
+2. Write a deep-dive, dramatic voiceover script (110-140 words total) segmented by each selected panel (1-2 sentences per panel).
+3. Choose a music_mood (sad_violin, upbeat_adventure, or dramatic) and optional sound_effects.
+4. For all {total_panels} panels, specify their primary focus area coordinates [ymin, xmin, ymax, xmax] in the panel_focus_areas dictionary.
+5. Ensure the parts form a seamless, continuous story flow. Never mention part numbers or divisions in the script text.
+6. Keep the tone engaging and targeted at seasoned One Piece manga readers.
 
 Output valid JSON only."""

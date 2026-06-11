@@ -28,6 +28,7 @@ class GeneratedAudio:
     audio_path: Path
     duration_ms: int
     script: str
+    word_boundaries: Optional[List[dict]] = None
 
     @property
     def duration_seconds(self) -> float:
@@ -89,15 +90,27 @@ class AudioGenerator:
 
         # Generate audio with retries for transient network/DNS failures.
         max_attempts = 3
+        words = []
         for attempt in range(1, max_attempts + 1):
+            words = []
             try:
                 communicate = edge_tts.Communicate(
                     text=script,
                     voice=self.voice,
                     rate=self.rate,
-                    volume=self.volume
+                    volume=self.volume,
+                    boundary="WordBoundary"
                 )
-                await communicate.save(str(output_path))
+                with open(output_path, "wb") as f:
+                    async for chunk in communicate.stream():
+                        if chunk["type"] == "audio":
+                            f.write(chunk["data"])
+                        elif chunk["type"] == "WordBoundary":
+                            words.append({
+                                "word": chunk["text"],
+                                "start": chunk["offset"] / 10000000.0,
+                                "duration": chunk["duration"] / 10000000.0,
+                            })
                 break
             except Exception as e:
                 if attempt == max_attempts:
@@ -123,13 +136,24 @@ class AudioGenerator:
         # Get audio duration
         duration_ms = self._get_audio_duration(output_path)
 
+        # Save word boundaries to a JSON file
+        import json
+        words_path = output_path.with_name(f"part_{part_number}_words.json")
+        try:
+            with open(words_path, "w", encoding="utf-8") as f:
+                json.dump(words, f, indent=2)
+            logger.info(f"Saved {len(words)} word boundaries to {words_path}")
+        except Exception as write_err:
+            logger.warning(f"Could not save word boundaries: {write_err}")
+
         logger.info(f"Generated audio for part {part_number}: {output_path} ({duration_ms}ms)")
 
         return GeneratedAudio(
             part_number=part_number,
             audio_path=output_path,
             duration_ms=duration_ms,
-            script=script
+            script=script,
+            word_boundaries=words
         )
 
     def generate_audio_sync(

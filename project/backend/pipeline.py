@@ -24,6 +24,25 @@ from modules import (
 logger = logging.getLogger(__name__)
 
 
+def estimate_word_boundaries(script: str, duration_ms: int) -> list:
+    words = script.split()
+    if not words:
+        return []
+    total_sec = duration_ms / 1000.0
+    word_dur = total_sec / len(words)
+    boundaries = []
+    current_time = 0.0
+    for w in words:
+        clean_word = w.strip(".,!?;:()\"'-")
+        boundaries.append({
+            "word": clean_word,
+            "start": current_time,
+            "duration": word_dur
+        })
+        current_time += word_dur
+    return boundaries
+
+
 class MangaPipeline:
     """Main pipeline orchestrator for manga video generation."""
 
@@ -379,6 +398,26 @@ class MangaPipeline:
             key=lambda p: int(p.stem.split('P')[1])
         )
 
+        # Colorize manga panels locally using GAN colorizer
+        self._write_status(
+            "processing",
+            0.18,
+            "Colorizing manga panels locally",
+            active_phase="phase_1",
+            phase_status="processing",
+            phase_progress=0.90,
+            phase_message="Colorizing manga panels locally"
+        )
+        try:
+            from modules.colorizer import MangaColorizer
+            colorizer = MangaColorizer(use_gpu=True)
+            for idx, panel_path in enumerate(panel_paths, start=1):
+                logger.info(f"Colorizing panel {idx}/{len(panel_paths)}...")
+                colorizer.colorize_image(panel_path, panel_path)
+            logger.info(f"Successfully colorized all {len(panel_paths)} panels.")
+        except Exception as color_err:
+            logger.warning(f"Failed to colorize panels: {color_err}. Proceeding with original black & white panels.")
+
         # Contact Sheet Generation
         self._write_status(
             "processing",
@@ -521,7 +560,11 @@ class MangaPipeline:
                 panels=part_panel_paths,
                 background_music_path=background_music_path,
                 output_path=self.job_workspace / "videos" / f"part_{part.part_number}.mp4",
-                focus_areas=getattr(story_analysis, "panel_focus_areas", {})
+                focus_areas=getattr(story_analysis, "panel_focus_areas", {}),
+                script_segments=getattr(part, "script_segments", None),
+                word_boundaries=getattr(audio, "word_boundaries", None),
+                music_mood=getattr(part, "music_mood", None),
+                sound_effects=getattr(part, "sound_effects", None)
             )
             video_configs.append(video_config)
 
@@ -613,6 +656,17 @@ class MangaPipeline:
             key=lambda p: int(p.stem.split('P')[1]) if p.stem.split('P')[1].isdigit() else 0
         )
 
+        # Colorize manga panels locally using GAN colorizer
+        try:
+            from modules.colorizer import MangaColorizer
+            colorizer = MangaColorizer(use_gpu=True)
+            for idx, panel_path in enumerate(panel_paths, start=1):
+                logger.info(f"Colorizing cached panel {idx}/{len(panel_paths)}...")
+                colorizer.colorize_image(panel_path, panel_path)
+            logger.info(f"Successfully colorized all {len(panel_paths)} cached panels.")
+        except Exception as color_err:
+            logger.warning(f"Failed to colorize cached panels: {color_err}. Proceeding with original panels.")
+
         # 5. Load story analysis object
         with open(self.job_workspace / "story_analysis.json", "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -629,11 +683,27 @@ class MangaPipeline:
                 duration_ms = int(audio.info.length * 1000)
             except Exception:
                 duration_ms = 40000
+                
+            # Load cached word boundaries if they exist
+            words_path = audio_path.with_name(f"part_{part.part_number}_words.json")
+            words = None
+            if words_path.exists():
+                try:
+                    with open(words_path, "r", encoding="utf-8") as wf:
+                        words = json.load(wf)
+                except Exception:
+                    pass
+            
+            if not words:
+                logger.info(f"Generating fallback word boundaries for cached part {part.part_number}")
+                words = estimate_word_boundaries(part.script, duration_ms)
+                
             audio_results.append(GeneratedAudio(
                 part_number=part.part_number,
                 audio_path=audio_path,
                 duration_ms=duration_ms,
-                script=part.script
+                script=part.script,
+                word_boundaries=words
             ))
 
         return panel_paths, story_analysis, audio_results
