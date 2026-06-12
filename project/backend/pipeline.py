@@ -218,6 +218,9 @@ class MangaPipeline:
 
                 story_analysis = self._run_phase_2(page_paths, contact_sheet_paths, len(panel_paths), panels_pdf_path)
 
+                # Character-Specific Colorization using LLM Prompts
+                self._run_panel_colorization(story_analysis, panel_paths)
+
                 results["phases"]["phase_2"] = {
                     "status": "completed",
                     "story_parts": len(story_analysis.parts),
@@ -398,25 +401,8 @@ class MangaPipeline:
             key=lambda p: int(p.stem.split('P')[1])
         )
 
-        # Colorize manga panels locally using GAN colorizer
-        self._write_status(
-            "processing",
-            0.18,
-            "Colorizing manga panels locally",
-            active_phase="phase_1",
-            phase_status="processing",
-            phase_progress=0.90,
-            phase_message="Colorizing manga panels locally"
-        )
-        try:
-            from modules.colorizer import MangaColorizer
-            colorizer = MangaColorizer(use_gpu=True)
-            for idx, panel_path in enumerate(panel_paths, start=1):
-                logger.info(f"Colorizing panel {idx}/{len(panel_paths)}...")
-                colorizer.colorize_image(panel_path, panel_path)
-            logger.info(f"Successfully colorized all {len(panel_paths)} panels.")
-        except Exception as color_err:
-            logger.warning(f"Failed to colorize panels: {color_err}. Proceeding with original black & white panels.")
+        # Note: colorization is deferred to Phase 2.5 after character prompts are generated
+        logger.info("Deferred colorization to Phase 2.5 (after story analysis).")
 
         # Contact Sheet Generation
         self._write_status(
@@ -490,6 +476,53 @@ class MangaPipeline:
             logger.warning(f"Could not save story_analysis.json: {e}")
 
         return story_analysis
+
+    def _run_panel_colorization(
+        self,
+        story_analysis: StoryAnalysis,
+        panel_paths: List[Path]
+    ) -> None:
+        """Execute character-specific panel colorization using LLM prompts."""
+        self._write_status(
+            "processing",
+            0.50,
+            "Colorizing selected manga panels with AI",
+            active_phase="phase_2",
+            phase_status="processing",
+            phase_progress=0.95,
+            phase_message="Colorizing selected manga panels with AI"
+        )
+        try:
+            from modules.colorizer import MangaColorizer
+            colorizer = MangaColorizer(use_gpu=True)
+            
+            # Find all panels selected across all parts
+            selected_panel_ids = set()
+            for part in story_analysis.parts:
+                for panel_id in part.selected_panels:
+                    selected_panel_ids.add(panel_id)
+            
+            # Group panel paths by panel_id stem
+            panel_map = {}
+            for path in panel_paths:
+                stem = path.stem
+                if "P" in stem:
+                    parts = stem.split("P")
+                    if len(parts) >= 2 and parts[1].isdigit():
+                        panel_map[f"P{parts[1]}"] = path
+            
+            logger.info(f"Starting character-specific colorization for {len(selected_panel_ids)} selected panels...")
+            for idx, panel_id in enumerate(sorted(selected_panel_ids, key=lambda x: int(x[1:]) if x[1:].isdigit() else 0), start=1):
+                panel_path = panel_map.get(panel_id)
+                if panel_path and panel_path.exists():
+                    prompt = None
+                    if story_analysis.character_prompts:
+                        prompt = story_analysis.character_prompts.get(panel_id)
+                    logger.info(f"Colorizing panel {panel_id} ({idx}/{len(selected_panel_ids)}) with prompt: {prompt}")
+                    colorizer.colorize_image(panel_path, panel_path, prompt=prompt)
+            logger.info("Successfully colorized all selected manga panels.")
+        except Exception as color_err:
+            logger.warning(f"Failed to colorize panels: {color_err}. Proceeding with original black & white panels.")
 
     def _run_phase_3(
         self,
@@ -656,21 +689,43 @@ class MangaPipeline:
             key=lambda p: int(p.stem.split('P')[1]) if p.stem.split('P')[1].isdigit() else 0
         )
 
-        # Colorize manga panels locally using GAN colorizer
-        try:
-            from modules.colorizer import MangaColorizer
-            colorizer = MangaColorizer(use_gpu=True)
-            for idx, panel_path in enumerate(panel_paths, start=1):
-                logger.info(f"Colorizing cached panel {idx}/{len(panel_paths)}...")
-                colorizer.colorize_image(panel_path, panel_path)
-            logger.info(f"Successfully colorized all {len(panel_paths)} cached panels.")
-        except Exception as color_err:
-            logger.warning(f"Failed to colorize cached panels: {color_err}. Proceeding with original panels.")
-
         # 5. Load story analysis object
         with open(self.job_workspace / "story_analysis.json", "r", encoding="utf-8") as f:
             data = json.load(f)
             story_analysis = StoryAnalysis.from_dict(data)
+
+        # Colorize manga panels locally using Stable Diffusion
+        try:
+            from modules.colorizer import MangaColorizer
+            colorizer = MangaColorizer(use_gpu=True)
+            
+            # Find all panels selected across all parts
+            selected_panel_ids = set()
+            for part in story_analysis.parts:
+                for panel_id in part.selected_panels:
+                    selected_panel_ids.add(panel_id)
+            
+            # Group panel paths by panel_id stem
+            panel_map = {}
+            for path in panel_paths:
+                stem = path.stem
+                if "P" in stem:
+                    parts = stem.split("P")
+                    if len(parts) >= 2 and parts[1].isdigit():
+                        panel_map[f"P{parts[1]}"] = path
+            
+            logger.info(f"Starting character-specific colorization for {len(selected_panel_ids)} selected cached panels...")
+            for idx, panel_id in enumerate(sorted(selected_panel_ids, key=lambda x: int(x[1:]) if x[1:].isdigit() else 0), start=1):
+                panel_path = panel_map.get(panel_id)
+                if panel_path and panel_path.exists():
+                    prompt = None
+                    if story_analysis.character_prompts:
+                        prompt = story_analysis.character_prompts.get(panel_id)
+                    logger.info(f"Colorizing cached panel {panel_id} ({idx}/{len(selected_panel_ids)}) with prompt: {prompt}")
+                    colorizer.colorize_image(panel_path, panel_path, prompt=prompt)
+            logger.info("Successfully colorized selected cached panels.")
+        except Exception as color_err:
+            logger.warning(f"Failed to colorize cached panels: {color_err}. Proceeding with original panels.")
 
         # 6. Reconstruct Audio Results
         from modules.audio_generator import GeneratedAudio
