@@ -478,11 +478,13 @@ class VideoAssembler:
         watchdog.start()
 
         try:
+            temp_audio_path = output_path.parent / f"part_{part_number}_temp_audio.mp4"
             video.write_videofile(
                 str(output_path),
                 fps=self.fps,
                 codec=codec,
                 audio_codec='aac',
+                temp_audiofile=str(temp_audio_path),
                 bitrate=app_config.VIDEO_BITRATE,
                 preset=preset,
                 ffmpeg_params=["-pix_fmt", "yuv420p", "-movflags", "+faststart"],
