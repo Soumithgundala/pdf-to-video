@@ -47,7 +47,10 @@ DEFAULT_ASSETS = {
     "music": {
         "sad_violin": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-8.mp3",
         "upbeat_adventure": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3",
-        "dramatic": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3"
+        "dramatic": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3",
+        "binks_brew": "",
+        "drum_of_libration": "",
+        "yo_ho_ho_ho": ""
     },
     "sfx": {
         "yohoho": "https://www.myinstants.com/media/sounds/yo-ho-ho.mp3",

@@ -198,6 +198,7 @@ class JobStatus(BaseModel):
 class ProcessRequest(BaseModel):
     llm_provider: str = "google"
     background_music_url: Optional[str] = None
+    colorizer_mode: str = "stable_diffusion"
 
 
 @app.get("/api/health")
@@ -261,6 +262,28 @@ async def upload_pdf(file: UploadFile = File(...)):
     return {"job_id": job_id}
 
 
+@app.post("/api/jobs/{job_id}/character-references")
+async def upload_character_references(job_id: str, files: list[UploadFile] = File(...)):
+    """Upload character reference images for a job."""
+    # Ensure job workspace directory exists
+    job_dir = WORKSPACE_DIR / job_id / "character_references"
+    job_dir.mkdir(parents=True, exist_ok=True)
+    
+    saved_files = []
+    for file in files:
+        if not file.filename or not file.filename.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
+            continue
+        
+        file_path = job_dir / file.filename
+        content = await file.read()
+        with open(file_path, "wb") as f:
+            f.write(content)
+        saved_files.append(str(file_path))
+        
+    logger.info(f"Uploaded {len(saved_files)} character references for job {job_id}")
+    return {"status": "success", "files": saved_files}
+
+
 @app.post("/api/jobs/{job_id}/process")
 async def process_job(
     job_id: str,
@@ -316,7 +339,8 @@ async def process_job(
         run_pipeline,
         job_id,
         pdf_path,
-        request.llm_provider
+        request.llm_provider,
+        request.colorizer_mode
     )
 
     return {"status": "processing", "job_id": job_id}
@@ -324,7 +348,7 @@ async def process_job(
 
 
 
-def run_pipeline(job_id: str, pdf_path: Path, llm_provider: str):
+def run_pipeline(job_id: str, pdf_path: Path, llm_provider: str, colorizer_mode: str = "stable_diffusion"):
     """Run the pipeline in background."""
     logger.info(f"Starting pipeline for job {job_id}")
 
@@ -351,7 +375,7 @@ def run_pipeline(job_id: str, pdf_path: Path, llm_provider: str):
             logger.warning(f"Error checking cache: {cache_err}")
 
         pipeline = MangaPipeline(llm_provider=llm_provider)
-        results = pipeline.process(pdf_path, job_id, cached_job_id=cached_job_id)
+        results = pipeline.process(pdf_path, job_id, cached_job_id=cached_job_id, colorizer_mode=colorizer_mode)
 
         # Update job record
         if supabase:

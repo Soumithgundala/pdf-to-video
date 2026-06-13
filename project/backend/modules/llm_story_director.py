@@ -116,7 +116,8 @@ class LLMStoryDirector:
         page_images: List[Path],
         contact_sheet: Path,
         total_panels: int,
-        panels_pdf_path: Optional[Path] = None
+        panels_pdf_path: Optional[Path] = None,
+        character_ref_dir: Optional[Path] = None
     ) -> StoryAnalysis:
         """
         Analyze manga chapter and generate scripts for 4 video parts.
@@ -137,7 +138,7 @@ class LLMStoryDirector:
                 logger.info(f"Attempting story analysis (attempt {attempt + 1}/{self.max_retries})")
 
                 if self.provider == "openai":
-                    result = self._analyze_with_openai(page_images, contact_sheet, total_panels)
+                    result = self._analyze_with_openai(page_images, contact_sheet, total_panels, character_ref_dir=character_ref_dir)
                 else:
                     # Toggle key on attempt retry to bypass quota or rate limits
                     if attempt % 2 == 1 and getattr(config, "GOOGLE_API_KEY_2", ""):
@@ -147,7 +148,7 @@ class LLMStoryDirector:
                         logger.info("Using primary Gemini API key (GOOGLE_API_KEY) for this attempt...")
                         self.client = genai.Client(api_key=config.GOOGLE_API_KEY)
 
-                    result = self._analyze_with_gemini(page_images, contact_sheet, total_panels, panels_pdf_path)
+                    result = self._analyze_with_gemini(page_images, contact_sheet, total_panels, panels_pdf_path, character_ref_dir=character_ref_dir)
 
                 # Verify minimum panels per part
                 self._validate_result(result, total_panels)
@@ -177,7 +178,8 @@ class LLMStoryDirector:
         self,
         page_images: List[Path],
         contact_sheet: Path,
-        total_panels: int
+        total_panels: int,
+        character_ref_dir: Optional[Path] = None
     ) -> StoryAnalysis:
         """Analyze with OpenAI GPT-4o Vision."""
         if not self.client:
@@ -187,6 +189,50 @@ class LLMStoryDirector:
         base64_image = self._encode_image(contact_sheet)
 
         # Build messages for Chat Completion API with Vision
+        user_content = [
+            {
+                "type": "text",
+                "text": f"{self._get_user_prompt_text(total_panels)}\n\nHere is the contact sheet containing all extracted panels labeled P1, P2, etc."
+            },
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:image/png;base64,{base64_image}"
+                }
+            }
+        ]
+
+        # Collect default and custom character references
+        ref_image_paths = []
+        default_ref_dir = Path(__file__).parent.parent / "assets" / "character_references"
+        if default_ref_dir.exists():
+            for path in default_ref_dir.glob("*"):
+                if path.suffix.lower() in ('.png', '.jpg', '.jpeg', '.webp'):
+                    ref_image_paths.append(path)
+        if character_ref_dir and character_ref_dir.exists():
+            for path in character_ref_dir.glob("*"):
+                if path.suffix.lower() in ('.png', '.jpg', '.jpeg', '.webp'):
+                    ref_image_paths.append(path)
+
+        # Add character references to GPT-4o input
+        if ref_image_paths:
+            for path in ref_image_paths:
+                try:
+                    base64_ref = self._encode_image(path)
+                    user_content.append({
+                        "type": "text",
+                        "text": f"Character Reference Image (filename: {path.name}): Use this image to determine canonical/correct skin, hair, and clothing colors for characters present in this manga panel."
+                    })
+                    user_content.append({
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/png;base64,{base64_ref}"
+                        }
+                    })
+                    logger.info(f"Appended character reference to GPT-4o input: {path.name}")
+                except Exception as err:
+                    logger.warning(f"Could not load character reference {path.name}: {err}")
+
         messages = [
             {
                 "role": "system",
@@ -194,18 +240,7 @@ class LLMStoryDirector:
             },
             {
                 "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": f"{self._get_user_prompt_text(total_panels)}\n\nHere is the contact sheet containing all extracted panels labeled P1, P2, etc."
-                    },
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/png;base64,{base64_image}"
-                        }
-                    }
-                ]
+                "content": user_content
             }
         ]
 
@@ -226,7 +261,8 @@ class LLMStoryDirector:
         page_images: List[Path],
         contact_sheet: Path,
         total_panels: int,
-        panels_pdf_path: Optional[Path] = None
+        panels_pdf_path: Optional[Path] = None,
+        character_ref_dir: Optional[Path] = None
     ) -> StoryAnalysis:
         """Analyze with Google Gemini using PDF upload and contact sheet fallback."""
         if not self.client:
@@ -252,6 +288,30 @@ class LLMStoryDirector:
             except Exception as e:
                 logger.error(f"Failed to open contact sheet: {e}")
                 raise ValueError(f"Failed to load contact sheet image: {e}")
+
+        # Collect default and custom character references
+        ref_image_paths = []
+        default_ref_dir = Path(__file__).parent.parent / "assets" / "character_references"
+        if default_ref_dir.exists():
+            for path in default_ref_dir.glob("*"):
+                if path.suffix.lower() in ('.png', '.jpg', '.jpeg', '.webp'):
+                    ref_image_paths.append(path)
+        if character_ref_dir and character_ref_dir.exists():
+            for path in character_ref_dir.glob("*"):
+                if path.suffix.lower() in ('.png', '.jpg', '.jpeg', '.webp'):
+                    ref_image_paths.append(path)
+
+        # Add character reference images to Gemini contents
+        if ref_image_paths:
+            from PIL import Image
+            for path in ref_image_paths:
+                try:
+                    img_ref = Image.open(path)
+                    contents.append(f"Character Reference Image (filename: {path.name}):")
+                    contents.append(img_ref)
+                    logger.info(f"Added character reference image to Gemini contents: {path.name}")
+                except Exception as err:
+                    logger.warning(f"Could not load character reference image {path.name}: {err}")
 
         # Build the prompt
         prompt = f"""{self._get_system_prompt()}
@@ -393,7 +453,7 @@ You must:
 4. Select 5-7 panels from the manga pages that best illustrate each part, and assign matching voiceover sentences to each.
 5. Identify the primary visual focus area (character's face, action scene, main subject) for EACH panel.
 6. Select an appropriate background music mood and optional sound effects.
-7. For EACH panel in the manga (from P1 to P{total_panels}), identify the major One Piece characters present in the panel and describe their iconic visual details and canonical colors (e.g., "Monkey D. Luffy in red vest, straw hat, blue shorts", "Roronoa Zoro with green hair, green coat, swords", "Nami with orange hair", "Sanji with blonde hair", "Brook skeleton with black coat", etc.) to be used as a colorization prompt.
+7. For EACH panel in the manga (from P1 to P{total_panels}), identify the major One Piece characters present in the panel and describe their iconic visual details and canonical colors (e.g., "Monkey D. Luffy in red vest, straw hat, blue shorts", "Roronoa Zoro with green hair, green coat, swords", "Nami with orange hair", "Sanji with blonde hair", "Brook skeleton with black coat", etc.) to be used as a colorization prompt. Use any provided 'Character Reference Image' files to determine the exact colors (skin, clothing, hair, accessories) of specific characters in the panel prompts.
 
 CRITICAL CONTENT & TONE RULES:
 - Target a smart, dedicated audience. Assume they know all the lore, terms (Haki, Devil Fruits, Will of D, etc.), and characters.
@@ -401,6 +461,7 @@ CRITICAL CONTENT & TONE RULES:
 - Tone should be high-energy, exciting, and full of suspense, like an epic YouTube manga recap.
 - ABSOLUTELY DO NOT mention meta phrases like "part 1", "part 2", "in this part", "this is part...", "this video", "first", "next", or make any reference to the division of the video/chapters.
 - Avoid generic summaries; explain the actual events, character dialogue, and action sequences in the panels.
+- Use the provided character reference images to extract canonical skin tones, hair colors, and apparel colors for custom/new characters or specific outfits.
 
 Output a valid JSON object with this exact structure:
 {
@@ -428,7 +489,7 @@ Output a valid JSON object with this exact structure:
         }
       ],
       "selected_panels": ["P1", "P2"],
-      "music_mood": "sad_violin" or "upbeat_adventure" or "dramatic",
+      "music_mood": "sad_violin" or "upbeat_adventure" or "dramatic" or "binks_brew" or "drum_of_libration" or "yo_ho_ho_ho",
       "sound_effects": [
         {
           "panel_id": "P2",
@@ -446,7 +507,7 @@ CRITICAL FORMAT RULES:
 - Each part must have exactly 5-7 panels selected in reading order.
 - Panel IDs must match the sequential panel IDs (format: P1, P2, P3, etc.).
 - script_segments: Provide script text split by panel. The joined script text across all segments must be 110-140 words for natural pacing (~60-70 seconds spoken).
-- music_mood: Choose "sad_violin" for emotional/dump scenes, "upbeat_adventure" for lively/comedic/action transitions, "dramatic" for heavy lore/revelations.
+- music_mood: Choose "sad_violin" for emotional/tragic scenes, "upbeat_adventure" for lively/adventure transitions, "dramatic" for tense lore/revelations, "binks_brew" for cheerful pirate celebrations or sailing moments, "drum_of_libration" for high-hype fights or epic action, "yo_ho_ho_ho" for comedic or lighthearted scenes.
 - sound_effects: Add Brook's signature laugh "yohoho" or sword clashing "sword_clash" only if they match the action in the panel (optional).
 - DO NOT select the same panel multiple times across parts.
 - Each part must cover a distinct segment of the story in sequence."""
@@ -460,7 +521,7 @@ The document contains {total_panels} sequential panels with IDs P1 through P{tot
 For each of the 3 parts:
 1. Select 5-7 panels that best illustrate the narrative in sequence.
 2. Write a deep-dive, dramatic voiceover script (110-140 words total) segmented by each selected panel (1-2 sentences per panel).
-3. Choose a music_mood (sad_violin, upbeat_adventure, or dramatic) and optional sound_effects.
+3. Choose a music_mood (sad_violin, upbeat_adventure, dramatic, binks_brew, drum_of_libration, or yo_ho_ho_ho) and optional sound_effects.
 4. For all {total_panels} panels, specify their primary focus area coordinates [ymin, xmin, ymax, xmax] in the panel_focus_areas dictionary.
 5. For all {total_panels} panels, specify a descriptive prompt for character-specific colorization in the character_prompts dictionary, identifying which One Piece characters are in the panel and describing their standard colors.
 6. Ensure the parts form a seamless, continuous story flow. Never mention part numbers or divisions in the script text.

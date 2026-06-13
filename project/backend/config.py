@@ -66,3 +66,7 @@ PANELS_PER_PART = (5, 7)
 TTS_VOICE = os.getenv("TTS_VOICE", "en-US-GuyNeural")
 TTS_RATE = os.getenv("TTS_RATE", "+8%")
 BACKGROUND_MUSIC_VOLUME = float(os.getenv("BACKGROUND_MUSIC_VOLUME", "0.1"))
+
+# Colorizer
+COLORIZER_MODE = os.getenv("COLORIZER_MODE", "stable_diffusion")
+
