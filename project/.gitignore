@@ -43,3 +43,9 @@ temp_workspace/
 # ========================
 .DS_Store
 Thumbs.db
+backend/assets/music/*.mp3
+backend/assets/character_references/
+
+
+backend/manga_pipeline.db-shm
+backend/manga_pipeline.db-wal
