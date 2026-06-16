@@ -341,7 +341,7 @@ export function JobTracker({ jobId, onReset }: JobTrackerProps) {
       {status === 'completed' && (
         <div className="space-y-6">
           <h3 className="text-lg font-semibold text-white">Video Parts</h3>
-          {[1, 2, 3, 4].map((part) => (
+          {[1, 2, 3].map((part) => (
             <div key={part} className="bg-slate-900 rounded-xl p-5 border border-slate-800 space-y-4">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">

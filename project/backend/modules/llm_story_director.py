@@ -53,7 +53,7 @@ class VideoScript:
 
 @dataclass
 class StoryAnalysis:
-    """Complete story analysis for all 4 parts."""
+    """Complete story analysis for all 3 parts."""
     parts: List[VideoScript]
     total_panels_selected: int
     panel_focus_areas: Dict[str, List[int]] = None
@@ -120,7 +120,7 @@ class LLMStoryDirector:
         character_ref_dir: Optional[Path] = None
     ) -> StoryAnalysis:
         """
-        Analyze manga chapter and generate scripts for 4 video parts.
+        Analyze manga chapter and generate scripts for 3 video parts.
 
         Args:
             page_images: List of paths to page images
@@ -128,7 +128,7 @@ class LLMStoryDirector:
             total_panels: Total number of extracted panels
 
         Returns:
-            StoryAnalysis object with scripts for 4 parts
+            StoryAnalysis object with scripts for 3 parts
 
         Raises:
             ValueError: If analysis fails after all retries

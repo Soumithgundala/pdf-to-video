@@ -31,7 +31,7 @@ export function Dashboard() {
                 </span>
               </h1>
               <p className="text-lg text-slate-400 max-w-2xl mx-auto">
-                Upload a manga PDF and watch AI transform it into a 4-part video miniseries
+                Upload a manga PDF and watch AI transform it into a 3-part video miniseries
                 with professional voiceover and cinematic editing.
               </p>
             </div>
