@@ -659,7 +659,12 @@ class MangaPipeline:
 
             selected = selected[:7]  # Max 7 panels
 
-            script = "The crew navigates the treacherous waters of the Grand Line, where tension escalates as mysterious shadows loom ahead. The straw hats brace themselves for a major confrontation, analyzing every detail and movement of their adversaries, setting the stage for a dramatic clash of ideals and power."
+            scripts = [
+                "The Straw Hats face a shocking new mystery as they navigate the enigmatic lands of Elbaf! On Reddit and X, fans are already wild with speculation, debating if the massive ruins ahead tie back to the ancient Void Century lore. The crew moves forward, scanning the horizon for any signs of the mythical Giant King, as the community gears up for a massive revelation!",
+                "Inside the colossal Quest Castle, the tension rises to a boiling point as Luffy and the team stumble upon remnants of an ancient battle! Fans on online forums are heavily discussing the power-scaling of these legendary warriors, with popular theories suggesting a connection to Loki's past deviousness. The mysterious atmosphere thickens, setting the stage for a dramatic clash of ideals!",
+                "As the profound history of Elbaf's royal lineage is finally brought to light, Twitter has erupted in excitement over Hajrudin's connection to the crown! Seasoned manga readers are dissecting every single detail of the giant tribes' mixed heritage, debating the future alliance of the Straw Hat Grand Fleet. The epic One Piece saga continues, leaving the community eager for the next chapter!"
+            ]
+            script = scripts[i]
 
             parts.append(VideoScript(
                 part_number=i + 1,

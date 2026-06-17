@@ -160,11 +160,19 @@ class LLMStoryDirector:
                 logger.warning(f"JSON parsing failed on attempt {attempt + 1}: {e}")
                 if attempt == self.max_retries - 1:
                     raise ValueError(f"Failed to parse LLM response after {self.max_retries} attempts")
+                import time
+                sleep_time = 5 * (attempt + 1)
+                logger.info(f"Sleeping for {sleep_time} seconds before retrying...")
+                time.sleep(sleep_time)
 
             except Exception as e:
                 logger.error(f"Analysis failed on attempt {attempt + 1}: {e}")
                 if attempt == self.max_retries - 1:
                     raise
+                import time
+                sleep_time = 5 * (attempt + 1)
+                logger.info(f"Sleeping for {sleep_time} seconds before retrying...")
+                time.sleep(sleep_time)
 
         raise ValueError("Story analysis failed")
 
@@ -202,13 +210,8 @@ class LLMStoryDirector:
             }
         ]
 
-        # Collect default and custom character references
+        # Collect character references from custom directory only (avoiding default assets to keep payload small)
         ref_image_paths = []
-        default_ref_dir = Path(__file__).parent.parent / "assets" / "character_references"
-        if default_ref_dir.exists():
-            for path in default_ref_dir.glob("*"):
-                if path.suffix.lower() in ('.png', '.jpg', '.jpeg', '.webp'):
-                    ref_image_paths.append(path)
         if character_ref_dir and character_ref_dir.exists():
             for path in character_ref_dir.glob("*"):
                 if path.suffix.lower() in ('.png', '.jpg', '.jpeg', '.webp'):
@@ -289,13 +292,8 @@ class LLMStoryDirector:
                 logger.error(f"Failed to open contact sheet: {e}")
                 raise ValueError(f"Failed to load contact sheet image: {e}")
 
-        # Collect default and custom character references
+        # Collect character references from custom directory only (avoiding default assets to keep payload small)
         ref_image_paths = []
-        default_ref_dir = Path(__file__).parent.parent / "assets" / "character_references"
-        if default_ref_dir.exists():
-            for path in default_ref_dir.glob("*"):
-                if path.suffix.lower() in ('.png', '.jpg', '.jpeg', '.webp'):
-                    ref_image_paths.append(path)
         if character_ref_dir and character_ref_dir.exists():
             for path in character_ref_dir.glob("*"):
                 if path.suffix.lower() in ('.png', '.jpg', '.jpeg', '.webp'):
@@ -457,8 +455,13 @@ You must:
 
 CRITICAL CONTENT & TONE RULES:
 - Target a smart, dedicated audience. Assume they know all the lore, terms (Haki, Devil Fruits, Will of D, etc.), and characters.
+- Incorporate Reddit-style discussion, fan theories, and Twitter-style analysis/hype into the recap. Bring up speculative theories, community consensus, power-scaling questions, or hot takes (e.g., "The fan community has been debating if this means...", "Twitter erupted in excitement when this dropped...", "A popular Reddit theory suggests...", "Fans are going wild analyzing the implications of..."). This makes the script feel like a modern, interactive online deep-dive.
+- Short Chapter / Low Content Handling: If the manga chapter is short, has very few panels (e.g. less than 15-20 panels), or the action/story content is too low to naturally divide into 3 parts, you MUST still generate exactly 3 parts. To satisfy the 110-140 words requirement per part in this case, expand the script of each part into an engaging discussion featuring community reactions, fan theories, and Reddit/X (Twitter) discussion threads about the events or characters in these panels (e.g. discuss what fans are saying about the panels, quote hypothetical Reddit discussions like "On Reddit, fans are arguing whether this confirms...", and reference popular X comments). This ensures that even with low manga content, the videos are a full, engaging, minute-long discussion/deep-dive for each of the 3 parts.
+- DO NOT select the same panel multiple times across parts, UNLESS the total number of panels is less than 15. If the total number of panels is less than 15, you must reuse or overlap panels across parts to ensure each of the 3 parts has at least 5 panels selected.
+- Unordered Panel Handling: The uploaded manga pages and panels (P1, P2, P3...) might occasionally be out of order in the PDF due to scanner or multi-page layout shifts. You must inspect the narrative contents of the panels, reconstruct the correct story sequence, and order the panel IDs (`selected_panels` and `script_segments`) chronologically according to the correct story timeline, rather than sorting them numerically. Aranging them in correct story sequence will ensure the generated video is flawless.
 - Explain the story deeply: describe the specific actions, character emotions, dialogue impact, and combat details in the panels.
-- Tone should be high-energy, exciting, and full of suspense, like an epic YouTube manga recap.
+- Tone should be high-energy, exciting, full of suspense, and highly conversational, like an epic YouTube manga recap.
+- Audio Pacing / Tone: Write with expressive, dramatic punctuation (such as ellipses '...', dashes '-', and exclamation marks) to inject natural pauses and dynamic rhythm into the text-to-speech engine, ensuring the voiceover sounds cinematic and suspenseful rather than monotonous.
 - ABSOLUTELY DO NOT mention meta phrases like "part 1", "part 2", "in this part", "this is part...", "this video", "first", "next", or make any reference to the division of the video/chapters.
 - Avoid generic summaries; explain the actual events, character dialogue, and action sequences in the panels.
 - Use the provided character reference images to extract canonical skin tones, hair colors, and apparel colors for custom/new characters or specific outfits.
@@ -504,7 +507,7 @@ Output a valid JSON object with this exact structure:
 CRITICAL FORMAT RULES:
 - panel_focus_areas: For each panel P1, P2, ... up to P{total_panels}, detect the primary visual content/character/subject that must be visible in the video. Output the normalized bounding box [ymin, xmin, ymax, xmax] from 0 to 1000 (0 is top/left, 1000 is bottom/right).
 - character_prompts: A dictionary mapping every panel ID (P1, P2, etc.) to a descriptive character-specific prompt for colorizing. It MUST describe the One Piece characters present in that panel and their standard, canonical colors (e.g. red vest for Luffy, green hair for Zoro, orange hair for Nami, blonde hair for Sanji, etc.). Always append "colored manga panel, anime style, highly detailed" to the prompt. If no main characters are present, describe the background/scene (e.g. "wood ship deck, blue sky, colored manga panel, anime style, highly detailed").
-- Each part must have exactly 5-7 panels selected in reading order.
+- Each part must have exactly 5-7 panels selected in chronological narrative sequence (even if they are out of order in the PDF labels).
 - Panel IDs must match the sequential panel IDs (format: P1, P2, P3, etc.).
 - script_segments: Provide script text split by panel. The joined script text across all segments must be 110-140 words for natural pacing (~60-70 seconds spoken).
 - music_mood: Choose "sad_violin" for emotional/tragic scenes, "upbeat_adventure" for lively/adventure transitions, "dramatic" for tense lore/revelations, "binks_brew" for cheerful pirate celebrations or sailing moments, "drum_of_libration" for high-hype fights or epic action, "yo_ho_ho_ho" for comedic or lighthearted scenes.
@@ -519,8 +522,8 @@ CRITICAL FORMAT RULES:
 The document contains {total_panels} sequential panels with IDs P1 through P{total_panels}.
 
 For each of the 3 parts:
-1. Select 5-7 panels that best illustrate the narrative in sequence.
-2. Write a deep-dive, dramatic voiceover script (110-140 words total) segmented by each selected panel (1-2 sentences per panel).
+1. Select 5-7 panels that best illustrate the narrative in sequence. (If total panels is less than 15, you must reuse or overlap panels across parts to ensure each of the 3 parts has at least 5 panels).
+2. Write a deep-dive, dramatic voiceover script (110-140 words total) segmented by each selected panel (1-2 sentences per panel). If the story is too short or too low-action for 3 parts, write the script as an engaging discussion with Reddit discussions/theories based on the current episode/chapter, speculating on fan theories and reactions from platforms like Reddit or X.
 3. Choose a music_mood (sad_violin, upbeat_adventure, dramatic, binks_brew, drum_of_libration, or yo_ho_ho_ho) and optional sound_effects.
 4. For all {total_panels} panels, specify their primary focus area coordinates [ymin, xmin, ymax, xmax] in the panel_focus_areas dictionary.
 5. For all {total_panels} panels, specify a descriptive prompt for character-specific colorization in the character_prompts dictionary, identifying which One Piece characters are in the panel and describing their standard colors.
