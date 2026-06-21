@@ -109,6 +109,7 @@ class MangaPipeline:
         # Create workspace directories
         (self.job_workspace / "pages").mkdir(parents=True)
         (self.job_workspace / "panels").mkdir(parents=True)
+        (self.job_workspace / "stickers").mkdir(parents=True)
         (self.job_workspace / "contact_sheets").mkdir(parents=True)
         (self.job_workspace / "audio").mkdir(parents=True)
         (self.job_workspace / "videos").mkdir(parents=True)
@@ -145,6 +146,9 @@ class MangaPipeline:
                 self.phase_3_message = "Audio generation complete (cached)"
                 
                 panel_paths, story_analysis, audio_results = self.load_cached_assets(cached_job_id, colorizer_mode=colorizer_mode)
+                
+                # Regenerate clean character stickers for the cached panels
+                self._run_sticker_extraction(story_analysis, panel_paths)
                 
                 results["phases"]["phase_1"] = {
                     "status": "completed",
@@ -228,6 +232,9 @@ class MangaPipeline:
 
                 # Character-Specific Colorization using LLM Prompts
                 self._run_panel_colorization(story_analysis, panel_paths, colorizer_mode=colorizer_mode)
+
+                # Extract transparent character stickers from colorized panels using focus areas
+                self._run_sticker_extraction(story_analysis, panel_paths)
 
                 results["phases"]["phase_2"] = {
                     "status": "completed",
@@ -409,6 +416,9 @@ class MangaPipeline:
             key=lambda p: int(p.stem.split('P')[1])
         )
 
+        # Note: Sticker extraction is deferred to Phase 2.5 (after story analysis and colorization)
+        logger.info("Deferred character sticker extraction to Phase 2.5.")
+
         # Note: colorization is deferred to Phase 2.5 after character prompts are generated
         logger.info("Deferred colorization to Phase 2.5 (after story analysis).")
 
@@ -538,6 +548,52 @@ class MangaPipeline:
             logger.info("Successfully colorized all selected manga panels.")
         except Exception as color_err:
             logger.warning(f"Failed to colorize panels: {color_err}. Proceeding with original black & white panels.")
+
+    def _run_sticker_extraction(
+        self,
+        story_analysis: StoryAnalysis,
+        panel_paths: List[Path]
+    ) -> None:
+        """Extract optimized transparent character stickers for selected panels using focus areas and component filtering."""
+        import cv2
+        from modules import extract_clean_sticker
+        
+        stickers_dir = self.job_workspace / "stickers"
+        stickers_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Find all panels selected across all parts
+        selected_panel_ids = set()
+        for part in story_analysis.parts:
+            for panel_id in part.selected_panels:
+                selected_panel_ids.add(panel_id)
+                
+        # Group panel paths by panel_id stem
+        panel_map = {}
+        for path in panel_paths:
+            stem = path.stem
+            if "P" in stem:
+                parts = stem.split("P")
+                if len(parts) >= 2 and parts[1].isdigit():
+                    panel_map[f"P{parts[1]}"] = path
+                    
+        logger.info("Extracting optimized transparent stickers for %d selected panels...", len(selected_panel_ids))
+        
+        focus_areas = getattr(story_analysis, "panel_focus_areas", {}) or {}
+        
+        for idx, panel_id in enumerate(sorted(selected_panel_ids, key=lambda x: int(x[1:]) if x[1:].isdigit() else 0), start=1):
+            panel_path = panel_map.get(panel_id)
+            if not panel_path or not panel_path.exists():
+                continue
+                
+            logger.info(f"Extracting sticker for panel {panel_id} ({idx}/{len(selected_panel_ids)})...")
+            img = cv2.imread(str(panel_path))
+            if img is not None:
+                focus_box = focus_areas.get(panel_id)
+                sticker_img = extract_clean_sticker(img, focus_box)
+                sticker_name = f"sticker_{panel_id}.png"
+                cv2.imwrite(str(stickers_dir / sticker_name), sticker_img)
+                logger.info(f"Saved cleaned sticker to stickers/{sticker_name}")
+        logger.info("Character sticker extraction complete.")
 
     def _run_phase_3(
         self,

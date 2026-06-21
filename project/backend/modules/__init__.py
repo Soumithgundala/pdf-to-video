@@ -7,6 +7,7 @@ from .contact_sheet_generator import ContactSheetGenerator
 from .llm_story_director import LLMStoryDirector, VideoScript, StoryAnalysis
 from .audio_generator import AudioGenerator, GeneratedAudio
 from .video_assembler import VideoAssembler, VideoPartConfig, GeneratedVideo
+from .sticker_extractor import extract_sticker, extract_clean_sticker
 
 __all__ = [
     "PDFProcessor",
@@ -20,4 +21,6 @@ __all__ = [
     "VideoAssembler",
     "VideoPartConfig",
     "GeneratedVideo",
+    "extract_sticker",
+    "extract_clean_sticker",
 ]

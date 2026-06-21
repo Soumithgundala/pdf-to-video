@@ -449,7 +449,7 @@ You must:
 2. Divide the story into exactly 3 sequential parts.
 3. Write a dramatic, lore-rich voiceover script for each part, divided by selected panels. The total script of the part (all segments joined) must be between 110-140 words.
 4. Select 5-7 panels from the manga pages that best illustrate each part, and assign matching voiceover sentences to each.
-5. Identify the primary visual focus area (character's face, action scene, main subject) for EACH panel.
+5. Identify the precise coordinates of the main character's face and upper body (or the central active subject) for EACH panel to be used as a character sticker bounding box.
 6. Select an appropriate background music mood and optional sound effects.
 7. For EACH panel in the manga (from P1 to P{total_panels}), identify the major One Piece characters present in the panel and describe their iconic visual details and canonical colors (e.g., "Monkey D. Luffy in red vest, straw hat, blue shorts", "Roronoa Zoro with green hair, green coat, swords", "Nami with orange hair", "Sanji with blonde hair", "Brook skeleton with black coat", etc.) to be used as a colorization prompt. Use any provided 'Character Reference Image' files to determine the exact colors (skin, clothing, hair, accessories) of specific characters in the panel prompts.
 
@@ -505,7 +505,7 @@ Output a valid JSON object with this exact structure:
 }
 
 CRITICAL FORMAT RULES:
-- panel_focus_areas: For each panel P1, P2, ... up to P{total_panels}, detect the primary visual content/character/subject that must be visible in the video. Output the normalized bounding box [ymin, xmin, ymax, xmax] from 0 to 1000 (0 is top/left, 1000 is bottom/right).
+- panel_focus_areas: For each panel P1, P2, ... up to P{total_panels}, locate the bounding box wrapping the main character's face and upper body (or focal subject). Output the normalized bounding box [ymin, xmin, ymax, xmax] from 0 to 1000 (0 is top, 0 is left, 1000 is bottom, 1000 is right). You must be extremely precise and wrap the character's face and torso tightly. Avoid outputting [0, 0, 1000, 1000] (the whole panel) unless the panel has no distinct characters or is a wide landscape shot.
 - character_prompts: A dictionary mapping every panel ID (P1, P2, etc.) to a descriptive character-specific prompt for colorizing. It MUST describe the One Piece characters present in that panel and their standard, canonical colors (e.g. red vest for Luffy, green hair for Zoro, orange hair for Nami, blonde hair for Sanji, etc.). Always append "colored manga panel, anime style, highly detailed" to the prompt. If no main characters are present, describe the background/scene (e.g. "wood ship deck, blue sky, colored manga panel, anime style, highly detailed").
 - Each part must have exactly 5-7 panels selected in chronological narrative sequence (even if they are out of order in the PDF labels).
 - Panel IDs must match the sequential panel IDs (format: P1, P2, P3, etc.).
@@ -525,7 +525,7 @@ For each of the 3 parts:
 1. Select 5-7 panels that best illustrate the narrative in sequence. (If total panels is less than 15, you must reuse or overlap panels across parts to ensure each of the 3 parts has at least 5 panels).
 2. Write a deep-dive, dramatic voiceover script (110-140 words total) segmented by each selected panel (1-2 sentences per panel). If the story is too short or too low-action for 3 parts, write the script as an engaging discussion with Reddit discussions/theories based on the current episode/chapter, speculating on fan theories and reactions from platforms like Reddit or X.
 3. Choose a music_mood (sad_violin, upbeat_adventure, dramatic, binks_brew, drum_of_libration, or yo_ho_ho_ho) and optional sound_effects.
-4. For all {total_panels} panels, specify their primary focus area coordinates [ymin, xmin, ymax, xmax] in the panel_focus_areas dictionary.
+4. For all {total_panels} panels, locate the precise bounding box coordinates [ymin, xmin, ymax, xmax] of the main character's face and upper body (or focal subject) and specify it in the panel_focus_areas dictionary. Be extremely precise and avoid defaulting to [0, 0, 1000, 1000] so that characters can be cleanly extracted as stickers.
 5. For all {total_panels} panels, specify a descriptive prompt for character-specific colorization in the character_prompts dictionary, identifying which One Piece characters are in the panel and describing their standard colors.
 6. Ensure the parts form a seamless, continuous story flow. Never mention part numbers or divisions in the script text.
 7. Keep the tone engaging and targeted at seasoned One Piece manga readers.

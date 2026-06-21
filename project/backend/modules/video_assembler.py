@@ -663,7 +663,7 @@ class VideoAssembler:
         logger.info(f"Dynamic panel durations (seconds): {durations}")
         return durations
 
-    def _group_words_into_phrases(self, word_boundaries: List[Dict[str, Any]], max_words: int = 4) -> List[List[Dict[str, Any]]]:
+    def _group_words_into_phrases(self, word_boundaries: List[Dict[str, Any]], max_words: int = 7) -> List[List[Dict[str, Any]]]:
         if not word_boundaries:
             return []
         phrases = []
@@ -676,7 +676,11 @@ class VideoAssembler:
             last_word = current_phrase[-1]
             pause = word["start"] - (last_word["start"] + last_word["duration"])
             
-            if len(current_phrase) >= max_words or pause > 0.3:
+            # Check if last word ends with sentence punctuation
+            last_text = last_word["word"].strip()
+            ends_with_punc = last_text and last_text[-1] in ('.', '!', '?', ';')
+            
+            if len(current_phrase) >= max_words or pause > 0.4 or ends_with_punc:
                 phrases.append(current_phrase)
                 current_phrase = [word]
             else:
@@ -695,7 +699,7 @@ class VideoAssembler:
         stroke_color: tuple,
         size: Tuple[int, int]
     ) -> ImageClip:
-        """Create a transparent ImageClip of text with a highlighted active word using Pillow."""
+        """Create a transparent ImageClip of text with a rounded background box using Pillow."""
         from PIL import Image, ImageDraw, ImageFont
         
         width, height = size
@@ -711,49 +715,82 @@ class VideoAssembler:
             except Exception:
                 font = ImageFont.load_default()
                 
-        # Calculate space width
-        space_bbox = draw.textbbox((0, 0), " ", font=font)
-        space_w = space_bbox[2] - space_bbox[0]
+        # Join words to form the full phrase text
+        text = " ".join(w["word"] for w in phrase_words)
         
-        # Calculate sizes of each word
-        word_sizes = []
-        total_w = 0
-        max_h = 0
-        for w in phrase_words:
-            text = w["word"]
-            bbox = draw.textbbox((0, 0), text, font=font)
-            w_width = bbox[2] - bbox[0]
-            w_height = bbox[3] - bbox[1]
-            word_sizes.append((w_width, w_height))
-            total_w += w_width
-            if w_height > max_h:
-                max_h = w_height
-                
-        total_w += space_w * (len(phrase_words) - 1)
+        # Padding around text inside the box
+        pad_x = 24
+        pad_y = 12
         
-        # Centering coordinates
-        x = (width - total_w) // 2
-        y = (height - max_h) // 2
+        # Simple word wrap function to prevent screen edge overflow
+        def wrap_text(t, f, max_w):
+            words = t.split()
+            lines = []
+            current_line = []
+            for word in words:
+                test_line = " ".join(current_line + [word])
+                bbox = f.getbbox(test_line)
+                if bbox is None:
+                    test_w = 0
+                else:
+                    test_w = bbox[2] - bbox[0]
+                if test_w > max_w and current_line:
+                    lines.append(" ".join(current_line))
+                    current_line = [word]
+                else:
+                    current_line.append(word)
+            if current_line:
+                lines.append(" ".join(current_line))
+            return lines
+
+        # Wrap text to fit container width minus padding
+        lines = wrap_text(text, font, width - 2 * pad_x - 30)
         
-        # Draw each word with its corresponding color
-        for idx, w in enumerate(phrase_words):
-            text = w["word"]
-            w_w, w_h = word_sizes[idx]
+        # Calculate line dimensions
+        line_bboxes = []
+        line_widths = []
+        line_heights = []
+        for line in lines:
+            bbox = draw.textbbox((0, 0), line, font=font)
+            line_bboxes.append(bbox)
+            line_widths.append(bbox[2] - bbox[0])
+            line_heights.append(bbox[3] - bbox[1])
             
-            if active_idx is not None and idx == active_idx:
-                color = (250, 204, 21, 255)  # Bright yellow
-            else:
-                color = (255, 255, 255, 255)  # White
-                
+        max_line_w = max(line_widths) if line_widths else 0
+        total_text_h = sum(line_heights) + 6 * (len(lines) - 1) if line_heights else 0
+        
+        # Calculate box size with padding
+        box_w = max_line_w + 2 * pad_x
+        box_h = total_text_h + 2 * pad_y
+        
+        # Center the box
+        box_x1 = (width - box_w) // 2
+        box_y1 = (height - box_h) // 2
+        box_x2 = box_x1 + box_w
+        box_y2 = box_y1 + box_h
+        
+        # Draw rounded semi-transparent dark gray box behind text
+        draw.rounded_rectangle(
+            [box_x1, box_y1, box_x2, box_y2],
+            radius=12,
+            fill=(15, 15, 15, 150) # Dark gray, ~58% opacity
+        )
+        
+        # Draw text lines centered horizontally inside the box
+        curr_y = box_y1 + pad_y
+        for idx, line in enumerate(lines):
+            line_w = line_widths[idx]
+            line_h = line_heights[idx]
+            line_bbox = line_bboxes[idx]
+            
+            line_x = box_x1 + pad_x + (max_line_w - line_w) // 2
             draw.text(
-                (x, y),
-                text,
+                (line_x, curr_y - line_bbox[1]),
+                line,
                 font=font,
-                fill=color,
-                stroke_width=int(stroke_width),
-                stroke_fill=stroke_color
+                fill=(255, 255, 255, 255)
             )
-            x += w_w + space_w
+            curr_y += line_h + 6
             
         return ImageClip(np.array(img), transparent=True)
 
@@ -768,30 +805,25 @@ class VideoAssembler:
         for phrase in phrases:
             phrase_start = phrase[0]["start"]
             phrase_end = phrase[-1]["start"] + phrase[-1]["duration"]
-            n_words = len(phrase)
-            
-            for idx, active_word in enumerate(phrase):
-                win_start = phrase_start if idx == 0 else active_word["start"]
-                win_end = phrase_end if idx == n_words - 1 else phrase[idx+1]["start"]
-                win_dur = win_end - win_start
-                if win_dur <= 0:
-                    continue
-                    
-                try:
-                    tc = self._create_rich_text_clip(
-                        phrase_words=phrase,
-                        active_idx=idx,
-                        font_name="arialbd",
-                        font_size=55,
-                        stroke_width=3.5,
-                        stroke_color=(0, 0, 0, 255),
-                        size=(target_w - 100, 300)
-                    ).with_duration(win_dur).with_start(win_start).with_position(("center", target_h - 450))
-                    
-                    caption_clips.append(tc)
-                except Exception as e:
-                    logger.warning(f"Failed to create caption TextClip: {e}")
-                    
+            phrase_dur = phrase_end - phrase_start
+            if phrase_dur <= 0:
+                continue
+                
+            try:
+                tc = self._create_rich_text_clip(
+                    phrase_words=phrase,
+                    active_idx=None,
+                    font_name="comicbd.ttf",
+                    font_size=46,
+                    stroke_width=0.0,
+                    stroke_color=(0, 0, 0, 0),
+                    size=(target_w - 100, 200)
+                ).with_duration(phrase_dur).with_start(phrase_start).with_position(("center", target_h - 260))
+                
+                caption_clips.append(tc)
+            except Exception as e:
+                logger.warning(f"Failed to create caption TextClip: {e}")
+                
         return caption_clips
 
     def _create_panel_clip(
@@ -800,7 +832,7 @@ class VideoAssembler:
         duration: float,
         start_time: float = 0,
         focus_box: Optional[List[int]] = None
-    ) -> ImageClip:
+    ) -> Any:
         """Create a video clip for a single panel with Ken Burns effect centered on the focus box."""
         # Load image and scale to cover size once using OpenCV
         img = cv2.imread(str(panel_path))
@@ -829,6 +861,141 @@ class VideoAssembler:
         else:
             center_x = w_orig // 2
             center_y = h_orig // 2
+
+        # Check if transparent sticker is available for this panel
+        import re
+        panel_id = "P1"
+        m = re.search(r'panel_(P\d+)', panel_path.name)
+        if m:
+            panel_id = m.group(1)
+            
+        sticker_path = panel_path.parent.parent / "stickers" / f"sticker_{panel_id}.png"
+        
+        if sticker_path.exists():
+            try:
+                # Load transparent sticker (unchanged BGRA)
+                sticker_img = cv2.imread(str(sticker_path), cv2.IMREAD_UNCHANGED)
+                if sticker_img is not None and sticker_img.shape[2] == 4:
+                    # Convert BGR to RGB for the sticker, keeping alpha separate
+                    sticker_rgb = cv2.cvtColor(sticker_img[:, :, :3], cv2.COLOR_BGR2RGB)
+                    sticker_alpha = sticker_img[:, :, 3]
+                    
+                    # 1. Background blurred panel
+                    img_blur = cv2.GaussianBlur(img, (51, 51), 0)
+                    scale_bg = self._get_resize_factor((w_orig, h_orig))
+                    bg_w = int(w_orig * scale_bg)
+                    bg_h = int(h_orig * scale_bg)
+                    bg_resized = cv2.resize(img_blur, (bg_w, bg_h), interpolation=cv2.INTER_LINEAR)
+                    
+                    # Create background base clip
+                    bg_clip = ImageClip(bg_resized, duration=duration)
+                    
+                    # Apply Ken Burns zoom to background
+                    effect_params = self.ken_burns.get_random_effect()
+                    target_w, target_h = self.resolution
+                    
+                    # Project center coordinates
+                    resized_center_x = int(center_x * scale_bg)
+                    resized_center_y = int(center_y * scale_bg)
+                    
+                    # Pre-calculate sticker size scaling
+                    st_h, st_w = sticker_img.shape[:2]
+                    scale_st = (target_h * 0.65) / st_h
+                    new_st_w = int(st_w * scale_st)
+                    new_st_h = int(target_h * 0.65)
+                    
+                    if new_st_w > target_w - 100:
+                        scale_st = (target_w - 100) / st_w
+                        new_st_w = int(target_w - 100)
+                        new_st_h = int(st_h * scale_st)
+                        
+                    # Resize sticker components once
+                    st_resized_rgb = cv2.resize(sticker_rgb, (new_st_w, new_st_h), interpolation=cv2.INTER_LINEAR)
+                    st_resized_alpha = cv2.resize(sticker_alpha, (new_st_w, new_st_h), interpolation=cv2.INTER_LINEAR)
+                    st_alpha_norm = st_resized_alpha[:, :, None] / 255.0  # Normalized (H, W, 1)
+                    
+                    # Pre-calculate centered final position
+                    final_x = (target_w - new_st_w) // 2
+                    final_y_base = target_h - new_st_h - 100
+                    
+                    # Fast OpenCV blending function evaluated per-frame
+                    def zoom_and_blend_effect(get_frame, t):
+                        # Get cropped background frame
+                        frame = get_frame(t)
+                        progress = t / duration
+                        eased_progress = 2 * progress * progress if progress < 0.5 else 1 - (-2 * progress + 2)**2 / 2
+                        current_zoom = effect_params["start_zoom"] + (
+                            effect_params["end_zoom"] - effect_params["start_zoom"]
+                        ) * eased_progress
+                        
+                        h, w = frame.shape[:2]
+                        new_h, new_w = int(h / current_zoom), int(w / current_zoom)
+                        new_h = min(new_h, h)
+                        new_w = min(new_w, w)
+                        
+                        x_start_base = resized_center_x - new_w // 2
+                        y_start_base = resized_center_y - new_h // 2
+                        
+                        pan_limit_x = int((w - new_w) * 0.1)
+                        pan_limit_y = int((h - new_h) * 0.1)
+                        
+                        pan_x = int(effect_params["start_x"] * pan_limit_x * (1 - 2 * eased_progress))
+                        pan_y = int(effect_params["start_y"] * pan_limit_y * (1 - 2 * eased_progress))
+                        
+                        x_start = x_start_base + pan_x
+                        y_start = y_start_base + pan_y
+                        
+                        x_start = max(0, min(x_start, w - new_w))
+                        y_start = max(0, min(y_start, h - new_h))
+                        
+                        cropped = frame[
+                            y_start:y_start + new_h,
+                            x_start:x_start + new_w
+                        ].copy()
+                        if cropped.shape[:2] != (target_h, target_w):
+                            cropped = cv2.resize(cropped, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
+                            
+                        # Calculate current sticker y-coordinate (slide-up + floating idle)
+                        slide_dur = 0.5
+                        if t < slide_dur:
+                            progress_slide = t / slide_dur
+                            eased_slide = 1 - (1 - progress_slide) ** 2
+                            curr_y = int(target_h - (target_h - final_y_base) * eased_slide)
+                        else:
+                            import math
+                            y_offset = int(15 * math.sin((t - slide_dur) * 0.4 * 2 * math.pi))
+                            curr_y = final_y_base + y_offset
+                            
+                        # Overlay transparent sticker on background using fast OpenCV math
+                        y1, y2 = curr_y, curr_y + new_st_h
+                        x1, x2 = final_x, final_x + new_st_w
+                        
+                        y1_clamped = max(0, min(y1, target_h))
+                        y2_clamped = max(0, min(y2, target_h))
+                        x1_clamped = max(0, min(x1, target_w))
+                        x2_clamped = max(0, min(x2, target_w))
+                        
+                        st_y1 = y1_clamped - y1
+                        st_y2 = new_st_h - (y2 - y2_clamped)
+                        st_x1 = x1_clamped - x1
+                        st_x2 = new_st_w - (x2 - x2_clamped)
+                        
+                        if (y2_clamped > y1_clamped) and (x2_clamped > x1_clamped):
+                            bg_crop = cropped[y1_clamped:y2_clamped, x1_clamped:x2_clamped]
+                            st_crop_rgb = st_resized_rgb[st_y1:st_y2, st_x1:st_x2]
+                            st_crop_alpha = st_alpha_norm[st_y1:st_y2, st_x1:st_x2]
+                            
+                            blended = st_crop_rgb * st_crop_alpha + bg_crop * (1.0 - st_crop_alpha)
+                            cropped[y1_clamped:y2_clamped, x1_clamped:x2_clamped] = blended.astype(np.uint8)
+                            
+                        return cropped
+                        
+                    bg_clip = bg_clip.transform(zoom_and_blend_effect)
+                    bg_clip.size = (target_w, target_h)
+                    bg_clip = bg_clip.with_start(start_time)
+                    return bg_clip
+            except Exception as composite_err:
+                logger.warning(f"Failed to generate composite sticker clip: {composite_err}. Falling back to standard panel zoom.")
 
         scale = self._get_resize_factor((w_orig, h_orig))
         new_w = int(w_orig * scale)

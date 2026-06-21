@@ -92,6 +92,7 @@ class PanelExtractor:
         panels = []
         for idx, (x, y, w, h) in enumerate(bboxes):
             panel_image = image[y:y + h, x:x + w]
+            panel_image = self.autocrop_borders(panel_image)
             panel_filename = f"temp_page_{page_number}_panel_{idx}.png"
             panel_path = save_dir / panel_filename
             cv2.imwrite(str(panel_path), panel_image)
@@ -106,7 +107,7 @@ class PanelExtractor:
             panels.append(panel)
             logger.info(
                 "Extracted panel page_%d_idx_%d  size=(%dx%d)  path=%s",
-                page_number, idx, w, h, panel_path,
+                page_number, idx, panel_image.shape[1], panel_image.shape[0], panel_path,
             )
 
         return panels
@@ -133,6 +134,57 @@ class PanelExtractor:
 
         logger.info("Total panels extracted: %d", len(all_panels))
         return all_panels
+
+    def autocrop_borders(self, img: np.ndarray) -> np.ndarray:
+        """
+        Auto-crop solid borders (usually white or black margins) from the panel image.
+        """
+        if img is None or img.size == 0:
+            return img
+
+        h, w = img.shape[:2]
+        if h < 50 or w < 50:
+            return img
+
+        # Convert to grayscale
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+        # Threshold to detect white background (gutters / margins).
+        # In grayscale, 255 is pure white. We filter pixels <= 245 as non-white.
+        _, thresh_white = cv2.threshold(gray, 245, 255, cv2.THRESH_BINARY_INV)
+
+        # Threshold to detect black margins.
+        # In grayscale, 0 is pure black. We filter pixels >= 10 as non-black.
+        _, thresh_black = cv2.threshold(gray, 10, 255, cv2.THRESH_BINARY)
+
+        # Combined mask of non-border pixels (must be neither white nor black)
+        non_border_mask = cv2.bitwise_and(thresh_white, thresh_black)
+
+        # Find coordinates of non-border pixels
+        pts = np.argwhere(non_border_mask > 0)
+        if len(pts) > 0:
+            # pts contains coordinates as [y, x] (row, col)
+            y_min, x_min = pts.min(axis=0)
+            y_max, x_max = pts.max(axis=0)
+
+            # Add a small padding (3 pixels) to prevent cutting into the artwork
+            y_min = max(0, y_min - 3)
+            x_min = max(0, x_min - 3)
+            y_max = min(h, y_max + 3)
+            x_max = min(w, x_max + 3)
+
+            new_h = y_max - y_min
+            new_w = x_max - x_min
+
+            # Ensure the cropped image is at least 20% of the original size and reasonable resolution
+            if new_h > 100 and new_w > 100 and (new_h * new_w) > (h * w * 0.20):
+                logger.info(
+                    "Autocropped panel borders: (%dx%d) -> (%dx%d)",
+                    w, h, new_w, new_h
+                )
+                return img[y_min:y_max, x_min:x_max]
+
+        return img
 
     # ------------------------------------------------------------------
     # Detection pipeline
