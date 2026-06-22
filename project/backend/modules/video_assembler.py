@@ -879,13 +879,18 @@ class VideoAssembler:
                     # Convert BGR to RGB for the sticker, keeping alpha separate
                     sticker_rgb = cv2.cvtColor(sticker_img[:, :, :3], cv2.COLOR_BGR2RGB)
                     sticker_alpha = sticker_img[:, :, 3]
+                    sticker_bounds = self._alpha_bounds(sticker_alpha)
+                    if sticker_bounds is not None:
+                        _, _, content_w, content_h = sticker_bounds
+                    else:
+                        content_w, content_h = sticker_img.shape[1], sticker_img.shape[0]
                     
                     # 1. Background blurred panel
                     img_blur = cv2.GaussianBlur(img, (51, 51), 0)
                     scale_bg = self._get_resize_factor((w_orig, h_orig))
                     bg_w = int(w_orig * scale_bg)
                     bg_h = int(h_orig * scale_bg)
-                    bg_resized = cv2.resize(img_blur, (bg_w, bg_h), interpolation=cv2.INTER_LINEAR)
+                    bg_resized = self._resize_with_quality(img_blur, (bg_w, bg_h))
                     
                     # Create background base clip
                     bg_clip = ImageClip(bg_resized, duration=duration)
@@ -900,23 +905,28 @@ class VideoAssembler:
                     
                     # Pre-calculate sticker size scaling
                     st_h, st_w = sticker_img.shape[:2]
-                    scale_st = (target_h * 0.65) / st_h
-                    new_st_w = int(st_w * scale_st)
-                    new_st_h = int(target_h * 0.65)
-                    
-                    if new_st_w > target_w - 100:
-                        scale_st = (target_w - 100) / st_w
-                        new_st_w = int(target_w - 100)
-                        new_st_h = int(st_h * scale_st)
+                    max_sticker_h = int(target_h * 0.58)
+                    max_sticker_w = int(target_w * 0.80)
+                    scale_st = min(
+                        max_sticker_h / max(1, content_h),
+                        max_sticker_w / max(1, content_w)
+                    )
+                    scale_st = max(scale_st, 0.1)
+                    new_st_w = max(1, int(round(st_w * scale_st)))
+                    new_st_h = max(1, int(round(st_h * scale_st)))
                         
                     # Resize sticker components once
-                    st_resized_rgb = cv2.resize(sticker_rgb, (new_st_w, new_st_h), interpolation=cv2.INTER_LINEAR)
-                    st_resized_alpha = cv2.resize(sticker_alpha, (new_st_w, new_st_h), interpolation=cv2.INTER_LINEAR)
+                    st_resized_rgb = self._resize_with_quality(sticker_rgb, (new_st_w, new_st_h))
+                    st_resized_alpha = self._resize_with_quality(sticker_alpha, (new_st_w, new_st_h))
                     st_alpha_norm = st_resized_alpha[:, :, None] / 255.0  # Normalized (H, W, 1)
+                    shadow_alpha = cv2.GaussianBlur(st_resized_alpha, (0, 0), max(2.0, new_st_h * 0.012))
+                    shadow_alpha = np.clip(shadow_alpha.astype(np.float32) * 0.40, 0, 255).astype(np.uint8)
+                    shadow_alpha_norm = shadow_alpha[:, :, None] / 255.0
+                    shadow_rgb = np.zeros_like(st_resized_rgb)
                     
                     # Pre-calculate centered final position
                     final_x = (target_w - new_st_w) // 2
-                    final_y_base = target_h - new_st_h - 100
+                    final_y_base = max(40, target_h - new_st_h - max(88, int(target_h * 0.07)))
                     
                     # Fast OpenCV blending function evaluated per-frame
                     def zoom_and_blend_effect(get_frame, t):
@@ -953,7 +963,7 @@ class VideoAssembler:
                             x_start:x_start + new_w
                         ].copy()
                         if cropped.shape[:2] != (target_h, target_w):
-                            cropped = cv2.resize(cropped, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
+                            cropped = self._resize_with_quality(cropped, (target_w, target_h))
                             
                         # Calculate current sticker y-coordinate (slide-up + floating idle)
                         slide_dur = 0.5
@@ -965,28 +975,21 @@ class VideoAssembler:
                             import math
                             y_offset = int(15 * math.sin((t - slide_dur) * 0.4 * 2 * math.pi))
                             curr_y = final_y_base + y_offset
-                            
-                        # Overlay transparent sticker on background using fast OpenCV math
-                        y1, y2 = curr_y, curr_y + new_st_h
-                        x1, x2 = final_x, final_x + new_st_w
-                        
-                        y1_clamped = max(0, min(y1, target_h))
-                        y2_clamped = max(0, min(y2, target_h))
-                        x1_clamped = max(0, min(x1, target_w))
-                        x2_clamped = max(0, min(x2, target_w))
-                        
-                        st_y1 = y1_clamped - y1
-                        st_y2 = new_st_h - (y2 - y2_clamped)
-                        st_x1 = x1_clamped - x1
-                        st_x2 = new_st_w - (x2 - x2_clamped)
-                        
-                        if (y2_clamped > y1_clamped) and (x2_clamped > x1_clamped):
-                            bg_crop = cropped[y1_clamped:y2_clamped, x1_clamped:x2_clamped]
-                            st_crop_rgb = st_resized_rgb[st_y1:st_y2, st_x1:st_x2]
-                            st_crop_alpha = st_alpha_norm[st_y1:st_y2, st_x1:st_x2]
-                            
-                            blended = st_crop_rgb * st_crop_alpha + bg_crop * (1.0 - st_crop_alpha)
-                            cropped[y1_clamped:y2_clamped, x1_clamped:x2_clamped] = blended.astype(np.uint8)
+
+                        cropped = self._overlay_rgba(
+                            cropped,
+                            shadow_rgb,
+                            shadow_alpha_norm,
+                            final_x + 10,
+                            curr_y + 12,
+                        )
+                        cropped = self._overlay_rgba(
+                            cropped,
+                            st_resized_rgb,
+                            st_alpha_norm,
+                            final_x,
+                            curr_y,
+                        )
                             
                         return cropped
                         
@@ -1000,7 +1003,7 @@ class VideoAssembler:
         scale = self._get_resize_factor((w_orig, h_orig))
         new_w = int(w_orig * scale)
         new_h = int(h_orig * scale)
-        img_resized = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+        img_resized = self._resize_with_quality(img, (new_w, new_h))
 
         # Create base clip
         clip = ImageClip(img_resized, duration=duration)
@@ -1055,7 +1058,7 @@ class VideoAssembler:
             ]
 
             if cropped.shape[:2] != (target_h, target_w):
-                cropped = cv2.resize(cropped, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
+                cropped = self._resize_with_quality(cropped, (target_w, target_h))
 
             return cropped
 
@@ -1078,6 +1081,61 @@ class VideoAssembler:
 
         # Use larger scale to ensure coverage
         return max(scale_w, scale_h)
+
+    def _resize_with_quality(self, image: np.ndarray, size: Tuple[int, int]) -> np.ndarray:
+        """Resize with interpolation chosen for the scale direction."""
+        if image is None:
+            return image
+
+        target_w, target_h = size
+        src_h, src_w = image.shape[:2]
+        if src_w == target_w and src_h == target_h:
+            return image
+
+        interpolation = cv2.INTER_AREA if target_w < src_w or target_h < src_h else cv2.INTER_LANCZOS4
+        return cv2.resize(image, (target_w, target_h), interpolation=interpolation)
+
+    def _alpha_bounds(self, alpha: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
+        """Return the bounding box of non-transparent pixels, if present."""
+        non_zero = cv2.findNonZero((alpha > 0).astype(np.uint8))
+        if non_zero is None:
+            return None
+        return cv2.boundingRect(non_zero)
+
+    def _overlay_rgba(
+        self,
+        base_frame: np.ndarray,
+        overlay_rgb: np.ndarray,
+        overlay_alpha: np.ndarray,
+        x: int,
+        y: int,
+    ) -> np.ndarray:
+        """Blend an RGBA layer onto a base RGB frame."""
+        base_h, base_w = base_frame.shape[:2]
+        overlay_h, overlay_w = overlay_rgb.shape[:2]
+
+        x1 = max(0, x)
+        y1 = max(0, y)
+        x2 = min(base_w, x + overlay_w)
+        y2 = min(base_h, y + overlay_h)
+
+        if x2 <= x1 or y2 <= y1:
+            return base_frame
+
+        ox1 = x1 - x
+        oy1 = y1 - y
+        ox2 = ox1 + (x2 - x1)
+        oy2 = oy1 + (y2 - y1)
+
+        overlay_crop_rgb = overlay_rgb[oy1:oy2, ox1:ox2].astype(np.float32)
+        overlay_crop_alpha = overlay_alpha[oy1:oy2, ox1:ox2].astype(np.float32)
+        if overlay_crop_alpha.ndim == 2:
+            overlay_crop_alpha = overlay_crop_alpha[:, :, None]
+
+        base_crop = base_frame[y1:y2, x1:x2].astype(np.float32)
+        blended = overlay_crop_rgb * overlay_crop_alpha + base_crop * (1.0 - overlay_crop_alpha)
+        base_frame[y1:y2, x1:x2] = blended.astype(np.uint8)
+        return base_frame
 
     def _add_audio_enhanced(
         self,

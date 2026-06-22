@@ -15,7 +15,9 @@ mutagen>=1.47.0
 # Video Assembly
 moviepy>=1.0.3
 imageio-ffmpeg>=0.4.9
-rembg>=2.0.76
+# Better manga/anime sticker extraction
+rembg[cpu]>=2.0.76
+onnxruntime>=1.17.0
 
 # Local AI Manga Colorization
 diffusers>=0.26.0
