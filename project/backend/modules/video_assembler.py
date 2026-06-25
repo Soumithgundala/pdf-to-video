@@ -325,6 +325,13 @@ class VideoAssembler:
             final_video = concatenate_videoclips(video_clips, method="compose", padding=-transition_duration)
         else:
             final_video = concatenate_videoclips(video_clips, method="compose")
+            
+        # Add a visual flash at the start
+        target_w, target_h = self.resolution
+        flash_clip = ColorClip(size=(target_w, target_h), color=(255, 255, 255)).with_duration(0.15)
+        if vfx is not None:
+            flash_clip = flash_clip.with_effects([vfx.CrossFadeOut(0.15)])
+        final_video = CompositeVideoClip([final_video, flash_clip.with_start(0.0)])
 
         # Mix sound effects with their calculated start times
         mixed_sfx = []
@@ -353,7 +360,18 @@ class VideoAssembler:
         if outro_duration > 0:
             next_part = config.part_number + 1 if config.part_number < 3 else 1
             outro_words = [{"word": "Like"}, {"word": "for"}, {"word": f"Part {next_part}"}]
+            cliff_words = [{"word": "But"}, {"word": "what"}, {"word": "they"}, {"word": "found"}, {"word": "next..."}]
             try:
+                cliffhanger_clip = self._create_rich_text_clip(
+                    phrase_words=cliff_words,
+                    active_idx=None,
+                    font_name="arialbd",
+                    font_size=55,
+                    stroke_width=4.0,
+                    stroke_color=(0, 0, 0, 255),
+                    size=(target_w - 100, 200)
+                ).with_duration(1.0).with_start(final_video.duration - outro_duration - 1.0).with_position(("center", 300))
+                
                 outro_clip = self._create_rich_text_clip(
                     phrase_words=outro_words,
                     active_idx=2,
@@ -364,8 +382,8 @@ class VideoAssembler:
                     size=(target_w - 100, 200)
                 ).with_duration(outro_duration).with_start(final_video.duration - outro_duration).with_position(("center", 300))
                 
-                final_video = CompositeVideoClip([final_video, outro_clip])
-                logger.info(f"Added outro call to action: Like for Part {next_part}")
+                final_video = CompositeVideoClip([final_video, cliffhanger_clip, outro_clip])
+                logger.info(f"Added cliffhanger and outro call to action: Like for Part {next_part}")
             except Exception as outro_err:
                 logger.warning(f"Failed to create outro TextClip: {outro_err}")
 
@@ -699,7 +717,7 @@ class VideoAssembler:
         stroke_color: tuple,
         size: Tuple[int, int]
     ) -> ImageClip:
-        """Create a transparent ImageClip of text with a rounded background box using Pillow."""
+        """Create a transparent ImageClip of text with dynamic word coloring and stroke."""
         from PIL import Image, ImageDraw, ImageFont
         
         width, height = size
@@ -709,88 +727,81 @@ class VideoAssembler:
         # Resolve font
         try:
             font = ImageFont.truetype(font_name, font_size)
+            active_font = ImageFont.truetype(font_name, font_size + 4) # Slightly larger for active
         except Exception:
             try:
                 font = ImageFont.truetype(f"{font_name}.ttf", font_size)
+                active_font = ImageFont.truetype(f"{font_name}.ttf", font_size + 4)
             except Exception:
                 font = ImageFont.load_default()
+                active_font = font
                 
-        # Join words to form the full phrase text
-        text = " ".join(w["word"] for w in phrase_words)
-        
-        # Padding around text inside the box
         pad_x = 24
         pad_y = 12
         
-        # Simple word wrap function to prevent screen edge overflow
-        def wrap_text(t, f, max_w):
-            words = t.split()
-            lines = []
-            current_line = []
-            for word in words:
-                test_line = " ".join(current_line + [word])
-                bbox = f.getbbox(test_line)
-                if bbox is None:
-                    test_w = 0
-                else:
-                    test_w = bbox[2] - bbox[0]
-                if test_w > max_w and current_line:
-                    lines.append(" ".join(current_line))
-                    current_line = [word]
-                else:
-                    current_line.append(word)
-            if current_line:
-                lines.append(" ".join(current_line))
-            return lines
-
-        # Wrap text to fit container width minus padding
-        lines = wrap_text(text, font, width - 2 * pad_x - 30)
+        # Word wrapping while preserving indices
+        lines = []
+        current_line = []
+        current_line_w = 0
+        max_w = width - 2 * pad_x - 30
         
-        # Calculate line dimensions
-        line_bboxes = []
-        line_widths = []
+        for i, word_data in enumerate(phrase_words):
+            word_str = word_data["word"]
+            f = active_font if i == active_idx else font
+            bbox = f.getbbox(word_str)
+            w = bbox[2] - bbox[0] if bbox else 0
+            
+            space_w = f.getbbox(" ")[2]
+            if current_line_w + w + space_w > max_w and current_line:
+                lines.append(current_line)
+                current_line = [(i, word_str, w, f)]
+                current_line_w = w
+            else:
+                current_line.append((i, word_str, w, f))
+                current_line_w += w + space_w
+        if current_line:
+            lines.append(current_line)
+            
+        # Calculate line heights and total height
         line_heights = []
         for line in lines:
-            bbox = draw.textbbox((0, 0), line, font=font)
-            line_bboxes.append(bbox)
-            line_widths.append(bbox[2] - bbox[0])
-            line_heights.append(bbox[3] - bbox[1])
+            max_h = 0
+            for _, word_str, _, f in line:
+                bbox = f.getbbox(word_str)
+                h = bbox[3] - bbox[1] if bbox else 0
+                max_h = max(max_h, h)
+            line_heights.append(max_h)
             
-        max_line_w = max(line_widths) if line_widths else 0
-        total_text_h = sum(line_heights) + 6 * (len(lines) - 1) if line_heights else 0
-        
-        # Calculate box size with padding
-        box_w = max_line_w + 2 * pad_x
+        total_text_h = sum(line_heights) + 10 * (len(lines) - 1) if line_heights else 0
         box_h = total_text_h + 2 * pad_y
         
-        # Center the box
-        box_x1 = (width - box_w) // 2
-        box_y1 = (height - box_h) // 2
-        box_x2 = box_x1 + box_w
-        box_y2 = box_y1 + box_h
+        curr_y = (height - box_h) // 2 + pad_y
         
-        # Draw rounded semi-transparent dark gray box behind text
-        draw.rounded_rectangle(
-            [box_x1, box_y1, box_x2, box_y2],
-            radius=12,
-            fill=(15, 15, 15, 150) # Dark gray, ~58% opacity
-        )
-        
-        # Draw text lines centered horizontally inside the box
-        curr_y = box_y1 + pad_y
-        for idx, line in enumerate(lines):
-            line_w = line_widths[idx]
-            line_h = line_heights[idx]
-            line_bbox = line_bboxes[idx]
+        def draw_text_with_stroke(d, x, y, text, f, fill_color, stroke=3):
+            # Draw strong stroke
+            for dx in [-stroke, 0, stroke]:
+                for dy in [-stroke, 0, stroke]:
+                    if dx != 0 or dy != 0:
+                        d.text((x + dx, y + dy), text, font=f, fill=(0, 0, 0, 255))
+            d.text((x, y), text, font=f, fill=fill_color)
+
+        for line_idx, line in enumerate(lines):
+            line_w = sum(w for _, _, w, _ in line) + space_w * (len(line) - 1)
+            line_h = line_heights[line_idx]
+            curr_x = (width - line_w) // 2
             
-            line_x = box_x1 + pad_x + (max_line_w - line_w) // 2
-            draw.text(
-                (line_x, curr_y - line_bbox[1]),
-                line,
-                font=font,
-                fill=(255, 255, 255, 255)
-            )
-            curr_y += line_h + 6
+            for orig_idx, word_str, w, f in line:
+                # Color coding
+                if orig_idx == active_idx:
+                    color = (255, 215, 0, 255) # Yellow for active
+                elif word_str[0].isupper() and len(word_str) > 1:
+                    color = (255, 100, 100, 255) # Red for proper nouns
+                else:
+                    color = (255, 255, 255, 255) # White default
+                    
+                draw_text_with_stroke(draw, curr_x, curr_y, word_str, f, color)
+                curr_x += w + space_w
+            curr_y += line_h + 10
             
         return ImageClip(np.array(img), transparent=True)
 
@@ -803,26 +814,27 @@ class VideoAssembler:
         target_w, target_h = self.resolution
         
         for phrase in phrases:
-            phrase_start = phrase[0]["start"]
-            phrase_end = phrase[-1]["start"] + phrase[-1]["duration"]
-            phrase_dur = phrase_end - phrase_start
-            if phrase_dur <= 0:
-                continue
+            for idx, word_data in enumerate(phrase):
+                start_t = word_data["start"]
+                dur = word_data["duration"]
                 
-            try:
-                tc = self._create_rich_text_clip(
-                    phrase_words=phrase,
-                    active_idx=None,
-                    font_name="comicbd.ttf",
-                    font_size=46,
-                    stroke_width=0.0,
-                    stroke_color=(0, 0, 0, 0),
-                    size=(target_w - 100, 200)
-                ).with_duration(phrase_dur).with_start(phrase_start).with_position(("center", target_h - 260))
-                
-                caption_clips.append(tc)
-            except Exception as e:
-                logger.warning(f"Failed to create caption TextClip: {e}")
+                if dur <= 0:
+                    continue
+                    
+                try:
+                    tc = self._create_rich_text_clip(
+                        phrase_words=phrase,
+                        active_idx=idx,
+                        font_name="arialbd",
+                        font_size=46,
+                        stroke_width=3.0,
+                        stroke_color=(0, 0, 0, 255),
+                        size=(target_w - 100, 200)
+                    ).with_duration(dur).with_start(start_t).with_position(("center", target_h - 260))
+                    
+                    caption_clips.append(tc)
+                except Exception as e:
+                    logger.warning(f"Failed to create caption TextClip for word {word_data['word']}: {e}")
                 
         return caption_clips
 
@@ -885,8 +897,9 @@ class VideoAssembler:
                     else:
                         content_w, content_h = sticker_img.shape[1], sticker_img.shape[0]
                     
-                    # 1. Background blurred panel
+                    # 1. Background blurred panel (darkened to contrast characters)
                     img_blur = cv2.GaussianBlur(img, (51, 51), 0)
+                    img_blur = (img_blur * 0.25).astype(np.uint8) # Darken significantly
                     scale_bg = self._get_resize_factor((w_orig, h_orig))
                     bg_w = int(w_orig * scale_bg)
                     bg_h = int(h_orig * scale_bg)
@@ -926,14 +939,22 @@ class VideoAssembler:
                     
                     # Pre-calculate centered final position
                     final_x = (target_w - new_st_w) // 2
-                    final_y_base = max(40, target_h - new_st_h - max(88, int(target_h * 0.07)))
+                    # Move to middle/top of screen instead of bottom
+                    final_y_base = int((target_h - new_st_h) * 0.35)
+                    
+                    use_snap_zoom = random.random() > 0.3
                     
                     # Fast OpenCV blending function evaluated per-frame
                     def zoom_and_blend_effect(get_frame, t):
                         # Get cropped background frame
                         frame = get_frame(t)
                         progress = t / duration
-                        eased_progress = 2 * progress * progress if progress < 0.5 else 1 - (-2 * progress + 2)**2 / 2
+                        
+                        if use_snap_zoom:
+                            eased_progress = 1.0 - (2.0 ** (-10.0 * progress)) if progress < 1.0 else 1.0
+                        else:
+                            eased_progress = 2 * progress * progress if progress < 0.5 else 1 - (-2 * progress + 2)**2 / 2
+                            
                         current_zoom = effect_params["start_zoom"] + (
                             effect_params["end_zoom"] - effect_params["start_zoom"]
                         ) * eased_progress
@@ -970,25 +991,42 @@ class VideoAssembler:
                         if t < slide_dur:
                             progress_slide = t / slide_dur
                             eased_slide = 1 - (1 - progress_slide) ** 2
-                            curr_y = int(target_h - (target_h - final_y_base) * eased_slide)
+                            # Slide up slightly (100 pixels) instead of from the very bottom
+                            curr_y = int(final_y_base + 100 * (1.0 - eased_slide))
                         else:
                             import math
                             y_offset = int(15 * math.sin((t - slide_dur) * 0.4 * 2 * math.pi))
                             curr_y = final_y_base + y_offset
 
+                        # Apply opposing parallax and breathing scale
+                        parallax_x = -int(pan_x * 0.6)
+                        parallax_y = -int(pan_y * 0.6)
+                        
+                        breathing_scale = 1.0 + 0.04 * progress
+                        st_w_b = int(new_st_w * breathing_scale)
+                        st_h_b = int(new_st_h * breathing_scale)
+                        
+                        curr_st_rgb = self._resize_with_quality(st_resized_rgb, (st_w_b, st_h_b)) if breathing_scale > 1.01 else st_resized_rgb
+                        curr_st_alpha = self._resize_with_quality(st_resized_alpha, (st_w_b, st_h_b)) if breathing_scale > 1.01 else st_resized_alpha
+                        curr_st_alpha_norm = curr_st_alpha[:, :, None] / 255.0
+                        
+                        curr_sh_rgb = self._resize_with_quality(shadow_rgb, (st_w_b, st_h_b)) if breathing_scale > 1.01 else shadow_rgb
+                        curr_sh_alpha = self._resize_with_quality(shadow_alpha, (st_w_b, st_h_b)) if breathing_scale > 1.01 else shadow_alpha
+                        curr_sh_alpha_norm = curr_sh_alpha[:, :, None] / 255.0
+
                         cropped = self._overlay_rgba(
                             cropped,
-                            shadow_rgb,
-                            shadow_alpha_norm,
-                            final_x + 10,
-                            curr_y + 12,
+                            curr_sh_rgb,
+                            curr_sh_alpha_norm,
+                            final_x + 10 + parallax_x - int((st_w_b - new_st_w)/2),
+                            curr_y + 12 + parallax_y - int((st_h_b - new_st_h)/2),
                         )
                         cropped = self._overlay_rgba(
                             cropped,
-                            st_resized_rgb,
-                            st_alpha_norm,
-                            final_x,
-                            curr_y,
+                            curr_st_rgb,
+                            curr_st_alpha_norm,
+                            final_x + parallax_x - int((st_w_b - new_st_w)/2),
+                            curr_y + parallax_y - int((st_h_b - new_st_h)/2),
                         )
                             
                         return cropped
@@ -1015,14 +1053,18 @@ class VideoAssembler:
         # Project center coordinates to the resized image
         resized_center_x = int(center_x * scale)
         resized_center_y = int(center_y * scale)
+        
+        use_snap_zoom = random.random() > 0.3
 
         # Apply zoom effect
         def zoom_effect(get_frame, t):
             frame = get_frame(t)
             progress = t / duration
 
-            # Quadratic ease-in-out curve for organic acceleration/deceleration
-            eased_progress = 2 * progress * progress if progress < 0.5 else 1 - (-2 * progress + 2)**2 / 2
+            if use_snap_zoom:
+                eased_progress = 1.0 - (2.0 ** (-10.0 * progress)) if progress < 1.0 else 1.0
+            else:
+                eased_progress = 2 * progress * progress if progress < 0.5 else 1 - (-2 * progress + 2)**2 / 2
 
             current_zoom = effect_params["start_zoom"] + (
                 effect_params["end_zoom"] - effect_params["start_zoom"]

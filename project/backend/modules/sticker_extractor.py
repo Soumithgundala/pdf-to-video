@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from typing import Dict, List, Optional, Tuple
 
 import cv2
@@ -30,6 +31,7 @@ except ImportError:
 
 REMBG_MODEL = (os.getenv("MANGA_STICKER_REM_BG_MODEL", "isnet-anime").strip() or "isnet-anime")
 REMBG_SESSION_CACHE: Dict[str, object] = {}
+REMBG_SESSION_LOCK = threading.Lock()
 
 
 def _ensure_bgra(img: np.ndarray) -> np.ndarray:
@@ -55,27 +57,32 @@ def _get_rembg_session() -> Optional[object]:
     ]
     last_error: Optional[Exception] = None
 
-    for model_name in model_candidates:
-        cached = REMBG_SESSION_CACHE.get(model_name)
-        if cached is not None:
-            return cached
+    with REMBG_SESSION_LOCK:
+        for model_name in model_candidates:
+            cached = REMBG_SESSION_CACHE.get(model_name)
+            if cached is not None:
+                return cached
 
-        try:
-            session = new_session(model_name)  # type: ignore[misc]
-            REMBG_SESSION_CACHE[model_name] = session
-            if model_name != REMBG_MODEL:
-                logger.info("Sticker extractor: using fallback rembg model '%s'.", model_name)
-            return session
-        except Exception as exc:
-            last_error = exc
-            logger.warning("Sticker extractor: failed to load rembg model '%s': %s", model_name, exc)
+            try:
+                session = new_session(model_name)  # type: ignore[misc]
+                REMBG_SESSION_CACHE[model_name] = session
+                if model_name != REMBG_MODEL:
+                    logger.info("Sticker extractor: using fallback rembg model '%s'.", model_name)
+                return session
+            except Exception as exc:
+                last_error = exc
+                logger.warning("Sticker extractor: failed to load rembg model '%s': %s", model_name, exc)
 
     if last_error:
         logger.warning("Sticker extractor: no rembg session could be created: %s", last_error)
     return None
 
 
-def _remove_background(img: np.ndarray) -> np.ndarray:
+def _remove_background(
+    img: np.ndarray,
+    use_alpha_matting: bool = False,
+    max_side: int = 1024,
+) -> np.ndarray:
     if img is None or img.size == 0:
         return img
 
@@ -83,25 +90,33 @@ def _remove_background(img: np.ndarray) -> np.ndarray:
         return _ensure_bgra(img)
 
     try:
-        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        orig_h, orig_w = img.shape[:2]
+        max_dim = max(orig_h, orig_w)
+        scale = 1.0
+        if max_dim > max_side and max_dim > 0:
+            scale = float(max_side) / float(max_dim)
+
+        proc_img = img
+        if scale < 1.0:
+            proc_w = max(1, int(round(orig_w * scale)))
+            proc_h = max(1, int(round(orig_h * scale)))
+            proc_img = cv2.resize(img, (proc_w, proc_h), interpolation=cv2.INTER_AREA)
+
+        img_rgb = cv2.cvtColor(proc_img, cv2.COLOR_BGR2RGB)
         session = _get_rembg_session()
+        remove_kwargs = dict(
+            alpha_matting=use_alpha_matting,
+            alpha_matting_foreground_threshold=240,
+            alpha_matting_background_threshold=10,
+            alpha_matting_erode_size=8,
+        )
         if session is not None:
-            sticker = remove(  # type: ignore[misc]
-                img_rgb,
-                session=session,
-                alpha_matting=True,
-                alpha_matting_foreground_threshold=240,
-                alpha_matting_background_threshold=10,
-                alpha_matting_erode_size=8,
-            )
-        else:
-            sticker = remove(  # type: ignore[misc]
-                img_rgb,
-                alpha_matting=True,
-                alpha_matting_foreground_threshold=240,
-                alpha_matting_background_threshold=10,
-                alpha_matting_erode_size=8,
-            )
+            remove_kwargs["session"] = session
+
+        sticker = remove(  # type: ignore[misc]
+            img_rgb,
+            **remove_kwargs,
+        )
 
         if isinstance(sticker, bytes):
             from io import BytesIO
@@ -110,13 +125,20 @@ def _remove_background(img: np.ndarray) -> np.ndarray:
             sticker = np.array(Image.open(BytesIO(sticker)).convert("RGBA"))
 
         if sticker.ndim == 2:
-            sticker = cv2.cvtColor(sticker, cv2.COLOR_GRAY2BGRA)
-        elif sticker.shape[2] == 3:
-            sticker = cv2.cvtColor(sticker, cv2.COLOR_RGB2BGRA)
+            alpha = sticker
         elif sticker.shape[2] == 4:
-            sticker = cv2.cvtColor(sticker, cv2.COLOR_RGBA2BGRA)
+            alpha = sticker[:, :, 3]
+        elif sticker.shape[2] == 3:
+            alpha = cv2.cvtColor(sticker, cv2.COLOR_RGB2GRAY)
+        else:
+            return _ensure_bgra(img)
 
-        return sticker
+        if scale < 1.0:
+            alpha = cv2.resize(alpha, (orig_w, orig_h), interpolation=cv2.INTER_LINEAR)
+
+        result = _ensure_bgra(img)
+        result[:, :, 3] = np.clip(alpha, 0, 255).astype(np.uint8)
+        return result
     except Exception as exc:
         logger.error("Failed to remove background using rembg: %s", exc)
         return _ensure_bgra(img)
@@ -416,7 +438,11 @@ def _refine_with_grabcut(rgb: np.ndarray, alpha: np.ndarray) -> np.ndarray:
     return refined
 
 
-def extract_sticker(img: np.ndarray) -> np.ndarray:
+def extract_sticker(
+    img: np.ndarray,
+    use_alpha_matting: bool = False,
+    max_side: int = 1024,
+) -> np.ndarray:
     """
     Remove background from the panel image to extract the character sticker as a transparent RGBA image.
     If rembg is not available, returns the original image with an added alpha channel.
@@ -427,139 +453,35 @@ def extract_sticker(img: np.ndarray) -> np.ndarray:
     if not REMBG_AVAILABLE:
         return _ensure_bgra(img)
 
-    sticker = _remove_background(img)
+    sticker = _remove_background(img, use_alpha_matting=use_alpha_matting, max_side=max_side)
     return sticker if sticker is not None else _ensure_bgra(img)
 
 
 def extract_clean_sticker(img: np.ndarray, focus_box: Optional[List[int]] = None) -> np.ndarray:
     """
-    Extract a transparent character sticker from a panel image.
-
-    The implementation prefers the focus-box crop when it produces a cleaner matte,
-    but falls back to the full panel when the crop is too sparse or clipped.
+    Extract a rectangular crop of the focus area (action/closeup) instead of removing the background.
+    This avoids bad rembg stickers and highlights the most exciting parts.
     """
     if img is None or img.size == 0:
         return img
 
     h, w = img.shape[:2]
-    total_pixels = h * w
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    edges = cv2.Canny(gray, 40, 120)
-    min_area = max(140, int(total_pixels * 0.00035))
     focus_rect = _focus_box_to_pixels(focus_box, w, h)
     if focus_rect is None:
         focus_rect = _auto_focus_rect(img)
 
-    candidates: List[Tuple[str, np.ndarray, float, float]] = []
-
-    full_rgba = extract_sticker(img)
-    if full_rgba is not None and full_rgba.shape[2] == 4:
-        full_alpha = _refine_alpha(full_rgba[:, :, 3])
-        full_rgb = full_rgba[:, :, :3]
-        full_components = _component_stats(full_alpha, gray, edges, min_area)
-        ranked_components = _rank_components(full_components, focus_rect, (h, w))
-        selected_components = ranked_components[:1]
-        if focus_rect is not None:
-            focused_components = [
-                comp
-                for comp in ranked_components
-                if comp.get("overlap", 0) > 0 or comp.get("score", 0.0) > 0
-            ]
-            if focused_components:
-                selected_components = focused_components[:1]
-
-        full_mask = np.zeros_like(full_alpha)
-        for comp in selected_components:
-            full_mask = cv2.bitwise_or(full_mask, comp["mask"].astype(np.uint8) * 255)
-        if np.count_nonzero(full_mask) == 0:
-            full_mask = full_alpha
-
-        full_score = sum(comp.get("score", 0.0) for comp in selected_components)
-        full_alpha = cv2.bitwise_and(full_alpha, full_mask)
-        full_alpha = _refine_alpha(full_alpha)
-        full_coverage = float(np.count_nonzero(full_alpha)) / float(full_alpha.size)
-        if full_coverage > 0.88:
-            full_score *= 0.55
-        elif full_coverage > 0.72:
-            full_score *= 0.75
-        candidates.append(("full", cv2.merge([full_rgb, full_alpha]), full_score, full_coverage))
-
     if focus_rect is not None:
-        fx1, fy1, fx2, fy2 = _expand_bounds(focus_rect, w, h)
+        # Pad the focus box slightly to keep some context
+        fx1, fy1, fx2, fy2 = _expand_bounds(focus_rect, w, h, pad_ratio=0.15, min_pad=24)
         crop_img = img[fy1:fy2, fx1:fx2]
-        crop_rgba = extract_sticker(crop_img)
-        if crop_rgba is not None and crop_rgba.shape[2] == 4:
-            crop_alpha = _refine_alpha(crop_rgba[:, :, 3])
-            crop_rgb = crop_rgba[:, :, :3]
-            crop_gray = cv2.cvtColor(crop_img, cv2.COLOR_BGR2GRAY)
-            crop_edges = cv2.Canny(crop_gray, 40, 120)
-            crop_components = _component_stats(crop_alpha, crop_gray, crop_edges, max(60, min_area // 2))
-            ranked_crop = _rank_components(crop_components, None, crop_alpha.shape[:2])
-            crop_selected = ranked_crop[:1]
-            crop_mask = np.zeros_like(crop_alpha)
-            for comp in crop_selected:
-                crop_mask = cv2.bitwise_or(crop_mask, comp["mask"].astype(np.uint8) * 255)
-            if np.count_nonzero(crop_mask) == 0:
-                crop_mask = crop_alpha
-            crop_score = sum(comp.get("score", 0.0) for comp in crop_selected)
+        
+        # Ensure BGRA with fully opaque alpha
+        rgba = _ensure_bgra(crop_img)
+        rgba[:, :, 3] = 255
+        logger.info("Sticker extractor: produced rectangular crop instead of transparent sticker.")
+        return rgba
 
-            placed_alpha = np.zeros((h, w), dtype=np.uint8)
-            placed_alpha[fy1:fy2, fx1:fx2] = cv2.bitwise_and(crop_alpha, crop_mask)
-            placed_alpha = _refine_alpha(placed_alpha)
-            crop_coverage = float(np.count_nonzero(placed_alpha)) / float(placed_alpha.size)
-            if crop_coverage > 0.88:
-                crop_score *= 0.6
-            candidates.append(("crop", cv2.merge([img.copy(), placed_alpha]), crop_score, crop_coverage))
-
-    if not candidates:
-        return _ensure_bgra(img)
-
-    def _candidate_rank(item: Tuple[str, np.ndarray, float, float]) -> float:
-        name, _, score, coverage = item
-        if coverage > 0.9:
-            score -= 50000.0
-        elif coverage > 0.75:
-            score -= 18000.0
-        elif coverage < 0.03:
-            score -= 8000.0
-
-        score -= abs(coverage - 0.28) * 12000.0
-        if name == "crop":
-            score += 2500.0
-        return score
-
-    chosen_name, chosen_rgba, _, chosen_coverage = max(candidates, key=_candidate_rank)
-
-    if chosen_rgba is None or chosen_rgba.shape[2] != 4:
-        return _ensure_bgra(img)
-
-    final_rgb = chosen_rgba[:, :, :3]
-    final_alpha = _refine_alpha(chosen_rgba[:, :, 3])
-
-    refined_alpha = _refine_with_grabcut(final_rgb, final_alpha)
-    if refined_alpha is not None and refined_alpha.shape == final_alpha.shape:
-        final_alpha = _refine_alpha(refined_alpha)
-
-    non_zero = cv2.findNonZero((final_alpha > 0).astype(np.uint8))
-    if non_zero is not None:
-        x, y, cw, ch = cv2.boundingRect(non_zero)
-        crop_pad = max(8, int(round(min(cw, ch) * 0.08)))
-        x = max(0, x - crop_pad)
-        y = max(0, y - crop_pad)
-        cw = min(w - x, cw + 2 * crop_pad)
-        ch = min(h - y, ch + 2 * crop_pad)
-        final_rgb = final_rgb[y : y + ch, x : x + cw]
-        final_alpha = final_alpha[y : y + ch, x : x + cw]
-
-        if chosen_name == "crop":
-            logger.info("Sticker extractor: crop candidate selected for cleaner sticker matte.")
-
-    final_alpha = np.clip(final_alpha, 0, 255).astype(np.uint8)
-    result = cv2.merge([final_rgb, final_alpha])
-    logger.info(
-        "Sticker extractor: produced sticker %s (coverage=%.3f) with size %s",
-        chosen_name,
-        chosen_coverage,
-        result.shape[:2],
-    )
-    return result
+    # Fallback to whole image if no focus rect found
+    rgba = _ensure_bgra(img)
+    rgba[:, :, 3] = 255
+    return rgba

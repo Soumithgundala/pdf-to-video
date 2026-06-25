@@ -8,6 +8,33 @@ from PIL import Image
 
 logger = logging.getLogger(__name__)
 
+
+def looks_already_colored(
+    image: np.ndarray,
+    *,
+    color_ratio_threshold: float = 0.10,
+    channel_spread_threshold: int = 14,
+    mean_spread_threshold: float = 5.0,
+) -> bool:
+    """Quick heuristic to detect already-colored manga panels."""
+    if image is None or image.size == 0 or image.ndim != 3 or image.shape[2] < 3:
+        return False
+
+    sample = image
+    height, width = sample.shape[:2]
+    if max(height, width) > 320:
+        scale = 320.0 / float(max(height, width))
+        sample = cv2.resize(
+            sample,
+            (int(width * scale), int(height * scale)),
+            interpolation=cv2.INTER_AREA,
+        )
+
+    channel_spread = sample.max(axis=2).astype(np.int16) - sample.min(axis=2).astype(np.int16)
+    color_ratio = float(np.mean(channel_spread >= channel_spread_threshold))
+    mean_spread = float(channel_spread.mean())
+    return color_ratio >= color_ratio_threshold and mean_spread >= mean_spread_threshold
+
 class MangaColorizer:
     def __init__(self, mode: str = "stable_diffusion", use_gpu: bool = True):
         self.device = torch.device("cuda" if use_gpu and torch.cuda.is_available() else "cpu")
@@ -92,37 +119,45 @@ class MangaColorizer:
             return False
 
         try:
+            orig_bgr = cv2.imread(str(img_path))
+            if orig_bgr is None:
+                logger.error(f"Failed to load image from {img_path}")
+                return False
+
+            if looks_already_colored(orig_bgr):
+                logger.info(
+                    "Skipping colorization for %s because it already appears colored.",
+                    img_path.name,
+                )
+                if str(output_path) != str(img_path):
+                    cv2.imwrite(str(output_path), orig_bgr)
+                return True
+
             if self.mode == "stable_diffusion":
                 # Fallback prompt if none provided
                 if not prompt:
                     prompt = "colored manga panel, anime style, highly detailed"
-                
-                # 1. Load original image in BGR
-                orig_bgr = cv2.imread(str(img_path))
-                if orig_bgr is None:
-                    logger.error(f"Failed to load image from {img_path}")
-                    return False
-                    
+
                 orig_h, orig_w = orig_bgr.shape[:2]
-                
+
                 # 2. Convert original to Lab color space and extract L channel (luminance / line-art)
                 orig_lab = cv2.cvtColor(orig_bgr, cv2.COLOR_BGR2Lab)
                 orig_l = orig_lab[:, :, 0]
-                
+
                 # 3. Resize for Stable Diffusion processing (512x512 is standard/efficient)
                 sd_size = (512, 512)
                 resized_bgr = cv2.resize(orig_bgr, sd_size, interpolation=cv2.INTER_AREA)
-                
+
                 # 4. Extract Canny edges from resized grayscale image (white lines on black bg)
                 resized_gray = cv2.cvtColor(resized_bgr, cv2.COLOR_BGR2GRAY)
                 edges = cv2.Canny(resized_gray, 50, 150)
                 edges_3ch = np.stack([edges, edges, edges], axis=-1)
                 control_image = Image.fromarray(edges_3ch)
-                
+
                 # 5. Run pipeline
                 logger.info(f"Colorizing panel using prompt: '{prompt}'")
                 generator = torch.Generator().manual_seed(42)
-                
+
                 result_img = self.pipe(
                     prompt=prompt,
                     negative_prompt="monochrome, lowres, bad anatomy, worst quality, low quality, grayscale, black and white, sketch",
@@ -132,52 +167,52 @@ class MangaColorizer:
                     controlnet_conditioning_scale=1.0,
                     generator=generator
                 ).images[0]
-                
+
                 # 6. Convert PIL output to BGR OpenCV array
                 result_bgr = cv2.cvtColor(np.array(result_img), cv2.COLOR_RGB2BGR)
-                
+
                 # 7. Resize output BGR back to original size
                 result_resized = cv2.resize(result_bgr, (orig_w, orig_h), interpolation=cv2.INTER_CUBIC)
-                
+
                 # 8. Convert back-resized image to Lab
                 result_lab = cv2.cvtColor(result_resized, cv2.COLOR_BGR2Lab)
-                
+
                 # 9. Blend: combine original L (preserves sharp lines) with predicted ab channels (colors)
                 merged_lab = np.zeros_like(orig_lab)
                 merged_lab[:, :, 0] = orig_l
                 merged_lab[:, :, 1] = result_lab[:, :, 1]
                 merged_lab[:, :, 2] = result_lab[:, :, 2]
-                
+
                 # 10. Convert Lab to BGR and write
                 colored_bgr = cv2.cvtColor(merged_lab, cv2.COLOR_Lab2BGR)
                 cv2.imwrite(str(output_path), colored_bgr)
-                
+
                 logger.info(f"Successfully colorized and saved: {output_path.name}")
                 return True
 
             elif self.mode == "classic":
                 # Use SIGGRAPH 2017 classic CNN colorizer
                 from colorization_model.colorizers import load_img, preprocess_img, postprocess_tens
-                
+
                 # Preprocess image
                 img_rgb = load_img(str(img_path))
                 tens_l_orig, tens_l_rs = preprocess_img(img_rgb, HW=(256, 256))
-                
+
                 if self.device.type == "cuda":
                     tens_l_rs = tens_l_rs.cuda()
-                
+
                 # Run forward pass through the model
                 with torch.no_grad():
                     out_ab = self.classic_model(tens_l_rs).cpu()
-                
+
                 # Postprocess
                 out_img_rgb = postprocess_tens(tens_l_orig, out_ab)
-                
+
                 # Convert float RGB to uint8 BGR for saving with OpenCV
                 out_img_rgb_uint8 = (out_img_rgb * 255).astype(np.uint8)
                 out_img_bgr = cv2.cvtColor(out_img_rgb_uint8, cv2.COLOR_RGB2BGR)
                 cv2.imwrite(str(output_path), out_img_bgr)
-                
+
                 logger.info(f"Successfully colorized using Classic CNN and saved: {output_path.name}")
                 return True
 

@@ -497,6 +497,33 @@ class MangaPipeline:
 
         return story_analysis
 
+    def _collect_selected_panel_ids(self, story_analysis: StoryAnalysis) -> List[str]:
+        selected_panel_ids: List[str] = []
+        seen = set()
+        for part in story_analysis.parts:
+            for panel_id in part.selected_panels:
+                if panel_id not in seen:
+                    seen.add(panel_id)
+                    selected_panel_ids.append(panel_id)
+        return selected_panel_ids
+
+    def _build_panel_map(self, panel_paths: List[Path]) -> Dict[str, Path]:
+        panel_map: Dict[str, Path] = {}
+        for path in panel_paths:
+            stem = path.stem
+            if "P" in stem:
+                parts = stem.split("P")
+                if len(parts) >= 2 and parts[1].isdigit():
+                    panel_map[f"P{parts[1]}"] = path
+        return panel_map
+
+    def _panel_is_already_colored(self, panel_path: Path) -> bool:
+        import cv2
+        from modules.colorizer import looks_already_colored
+
+        img = cv2.imread(str(panel_path))
+        return img is not None and looks_already_colored(img)
+
     def _run_panel_colorization(
         self,
         story_analysis: StoryAnalysis,
@@ -506,6 +533,22 @@ class MangaPipeline:
         """Execute character-specific panel colorization using LLM prompts."""
         if colorizer_mode.lower() in ("none", "bw"):
             logger.info("Colorization mode is 'none' / 'bw'. Preserving original black & white panels.")
+            return
+
+        selected_panel_ids = self._collect_selected_panel_ids(story_analysis)
+        panel_map = self._build_panel_map(panel_paths)
+        panels_to_color = []
+        for panel_id in sorted(selected_panel_ids, key=lambda x: int(x[1:]) if x[1:].isdigit() else 0):
+            panel_path = panel_map.get(panel_id)
+            if not panel_path or not panel_path.exists():
+                continue
+            if self._panel_is_already_colored(panel_path):
+                logger.info("Skipping colorization for %s because it already appears colored.", panel_id)
+                continue
+            panels_to_color.append((panel_id, panel_path))
+
+        if not panels_to_color:
+            logger.info("Selected panels already appear colored; skipping local colorization.")
             return
 
         self._write_status(
@@ -520,31 +563,18 @@ class MangaPipeline:
         try:
             from modules.colorizer import MangaColorizer
             colorizer = MangaColorizer(mode=colorizer_mode, use_gpu=True)
-            
-            # Find all panels selected across all parts
-            selected_panel_ids = set()
-            for part in story_analysis.parts:
-                for panel_id in part.selected_panels:
-                    selected_panel_ids.add(panel_id)
-            
-            # Group panel paths by panel_id stem
-            panel_map = {}
-            for path in panel_paths:
-                stem = path.stem
-                if "P" in stem:
-                    parts = stem.split("P")
-                    if len(parts) >= 2 and parts[1].isdigit():
-                        panel_map[f"P{parts[1]}"] = path
-            
-            logger.info(f"Starting character-specific colorization for {len(selected_panel_ids)} selected panels using {colorizer_mode}...")
-            for idx, panel_id in enumerate(sorted(selected_panel_ids, key=lambda x: int(x[1:]) if x[1:].isdigit() else 0), start=1):
-                panel_path = panel_map.get(panel_id)
-                if panel_path and panel_path.exists():
-                    prompt = None
-                    if story_analysis.character_prompts:
-                        prompt = story_analysis.character_prompts.get(panel_id)
-                    logger.info(f"Colorizing panel {panel_id} ({idx}/{len(selected_panel_ids)}) with prompt: {prompt}")
-                    colorizer.colorize_image(panel_path, panel_path, prompt=prompt)
+
+            logger.info(
+                "Starting character-specific colorization for %d selected panels using %s...",
+                len(panels_to_color),
+                colorizer_mode,
+            )
+            for idx, (panel_id, panel_path) in enumerate(panels_to_color, start=1):
+                prompt = None
+                if story_analysis.character_prompts:
+                    prompt = story_analysis.character_prompts.get(panel_id)
+                logger.info(f"Colorizing panel {panel_id} ({idx}/{len(panels_to_color)}) with prompt: {prompt}")
+                colorizer.colorize_image(panel_path, panel_path, prompt=prompt)
             logger.info("Successfully colorized all selected manga panels.")
         except Exception as color_err:
             logger.warning(f"Failed to colorize panels: {color_err}. Proceeding with original black & white panels.")
@@ -555,44 +585,60 @@ class MangaPipeline:
         panel_paths: List[Path]
     ) -> None:
         """Extract optimized transparent character stickers for selected panels using focus areas and component filtering."""
+        import os
         import cv2
+        from concurrent.futures import ThreadPoolExecutor, as_completed
         from modules import extract_clean_sticker
-        
+
         stickers_dir = self.job_workspace / "stickers"
         stickers_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Find all panels selected across all parts
-        selected_panel_ids = set()
-        for part in story_analysis.parts:
-            for panel_id in part.selected_panels:
-                selected_panel_ids.add(panel_id)
-                
-        # Group panel paths by panel_id stem
-        panel_map = {}
-        for path in panel_paths:
-            stem = path.stem
-            if "P" in stem:
-                parts = stem.split("P")
-                if len(parts) >= 2 and parts[1].isdigit():
-                    panel_map[f"P{parts[1]}"] = path
-                    
-        logger.info("Extracting optimized transparent stickers for %d selected panels...", len(selected_panel_ids))
-        
+
+        selected_panel_ids = self._collect_selected_panel_ids(story_analysis)
+        if not selected_panel_ids:
+            logger.info("No selected panels available for sticker extraction.")
+            return
+
+        panel_map = self._build_panel_map(panel_paths)
         focus_areas = getattr(story_analysis, "panel_focus_areas", {}) or {}
-        
-        for idx, panel_id in enumerate(sorted(selected_panel_ids, key=lambda x: int(x[1:]) if x[1:].isdigit() else 0), start=1):
+        ordered_panel_ids = sorted(selected_panel_ids, key=lambda x: int(x[1:]) if x[1:].isdigit() else 0)
+        worker_count = max(1, min(int(os.getenv("MANGA_STICKER_WORKERS", "4")), len(ordered_panel_ids)))
+
+        logger.info(
+            "Extracting optimized transparent stickers for %d selected panels using %d worker(s)...",
+            len(ordered_panel_ids),
+            worker_count,
+        )
+
+        def _process_panel(panel_id: str) -> None:
             panel_path = panel_map.get(panel_id)
             if not panel_path or not panel_path.exists():
-                continue
-                
-            logger.info(f"Extracting sticker for panel {panel_id} ({idx}/{len(selected_panel_ids)})...")
+                return
+
+            sticker_path = stickers_dir / f"sticker_{panel_id}.png"
+            if sticker_path.exists() and sticker_path.stat().st_size > 0:
+                logger.info("Sticker already exists for panel %s; skipping.", panel_id)
+                return
+
+            logger.info(f"Extracting sticker for panel {panel_id}...")
             img = cv2.imread(str(panel_path))
-            if img is not None:
-                focus_box = focus_areas.get(panel_id)
-                sticker_img = extract_clean_sticker(img, focus_box)
-                sticker_name = f"sticker_{panel_id}.png"
-                cv2.imwrite(str(stickers_dir / sticker_name), sticker_img)
-                logger.info(f"Saved cleaned sticker to stickers/{sticker_name}")
+            if img is None:
+                return
+
+            focus_box = focus_areas.get(panel_id)
+            sticker_img = extract_clean_sticker(img, focus_box)
+            if sticker_img is not None and sticker_img.size > 0:
+                cv2.imwrite(str(sticker_path), sticker_img)
+                logger.info(f"Saved cleaned sticker to stickers/{sticker_path.name}")
+
+        if worker_count > 1:
+            with ThreadPoolExecutor(max_workers=worker_count) as executor:
+                futures = [executor.submit(_process_panel, panel_id) for panel_id in ordered_panel_ids]
+                for future in as_completed(futures):
+                    future.result()
+        else:
+            for panel_id in ordered_panel_ids:
+                _process_panel(panel_id)
+
         logger.info("Character sticker extraction complete.")
 
     def _run_phase_3(
@@ -777,33 +823,35 @@ class MangaPipeline:
         else:
             try:
                 from modules.colorizer import MangaColorizer
-                colorizer = MangaColorizer(mode=colorizer_mode, use_gpu=True)
-                
-                # Find all panels selected across all parts
-                selected_panel_ids = set()
-                for part in story_analysis.parts:
-                    for panel_id in part.selected_panels:
-                        selected_panel_ids.add(panel_id)
-                
-                # Group panel paths by panel_id stem
-                panel_map = {}
-                for path in panel_paths:
-                    stem = path.stem
-                    if "P" in stem:
-                        parts = stem.split("P")
-                        if len(parts) >= 2 and parts[1].isdigit():
-                            panel_map[f"P{parts[1]}"] = path
-                
-                logger.info(f"Starting character-specific colorization for {len(selected_panel_ids)} selected cached panels using {colorizer_mode}...")
-                for idx, panel_id in enumerate(sorted(selected_panel_ids, key=lambda x: int(x[1:]) if x[1:].isdigit() else 0), start=1):
+
+                selected_panel_ids = self._collect_selected_panel_ids(story_analysis)
+                panel_map = self._build_panel_map(panel_paths)
+                panels_to_color = []
+                for panel_id in sorted(selected_panel_ids, key=lambda x: int(x[1:]) if x[1:].isdigit() else 0):
                     panel_path = panel_map.get(panel_id)
-                    if panel_path and panel_path.exists():
+                    if not panel_path or not panel_path.exists():
+                        continue
+                    if self._panel_is_already_colored(panel_path):
+                        logger.info("Skipping cached panel %s because it already appears colored.", panel_id)
+                        continue
+                    panels_to_color.append((panel_id, panel_path))
+
+                if not panels_to_color:
+                    logger.info("Cached panels already appear colored; skipping local colorization.")
+                else:
+                    colorizer = MangaColorizer(mode=colorizer_mode, use_gpu=True)
+                    logger.info(
+                        "Starting character-specific colorization for %d selected cached panels using %s...",
+                        len(panels_to_color),
+                        colorizer_mode,
+                    )
+                    for idx, (panel_id, panel_path) in enumerate(panels_to_color, start=1):
                         prompt = None
                         if story_analysis.character_prompts:
                             prompt = story_analysis.character_prompts.get(panel_id)
-                        logger.info(f"Colorizing cached panel {panel_id} ({idx}/{len(selected_panel_ids)}) with prompt: {prompt}")
+                        logger.info(f"Colorizing cached panel {panel_id} ({idx}/{len(panels_to_color)}) with prompt: {prompt}")
                         colorizer.colorize_image(panel_path, panel_path, prompt=prompt)
-                logger.info("Successfully colorized selected cached panels.")
+                    logger.info("Successfully colorized selected cached panels.")
             except Exception as color_err:
                 logger.warning(f"Failed to colorize cached panels: {color_err}. Proceeding with original panels.")
 
