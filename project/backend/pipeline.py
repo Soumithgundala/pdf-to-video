@@ -614,9 +614,9 @@ class MangaPipeline:
             if not panel_path or not panel_path.exists():
                 return
 
-            sticker_path = stickers_dir / f"sticker_{panel_id}.png"
+            sticker_path = stickers_dir / f"sticker_{panel_id}_0.png"
             if sticker_path.exists() and sticker_path.stat().st_size > 0:
-                logger.info("Sticker already exists for panel %s; skipping.", panel_id)
+                logger.info("Stickers already exist for panel %s; skipping.", panel_id)
                 return
 
             logger.info(f"Extracting sticker for panel {panel_id}...")
@@ -624,11 +624,19 @@ class MangaPipeline:
             if img is None:
                 return
 
-            focus_box = focus_areas.get(panel_id)
-            sticker_img = extract_clean_sticker(img, focus_box)
-            if sticker_img is not None and sticker_img.size > 0:
-                cv2.imwrite(str(sticker_path), sticker_img)
-                logger.info(f"Saved cleaned sticker to stickers/{sticker_path.name}")
+            focus_boxes = focus_areas.get(panel_id)
+            if not isinstance(focus_boxes, list) or not focus_boxes:
+                focus_boxes = [None]
+            elif isinstance(focus_boxes, list) and len(focus_boxes) > 0 and not isinstance(focus_boxes[0], list):
+                # Fallback if it somehow still returned a single flat box
+                focus_boxes = [focus_boxes]
+                
+            for idx, focus_box in enumerate(focus_boxes[:5]): # Max 5 stickers per panel
+                sticker_img = extract_clean_sticker(img, focus_box)
+                if sticker_img is not None and sticker_img.size > 0:
+                    current_sticker_path = stickers_dir / f"sticker_{panel_id}_{idx}.png"
+                    cv2.imwrite(str(current_sticker_path), sticker_img)
+                    logger.info(f"Saved cleaned sticker to stickers/{current_sticker_path.name}")
 
         if worker_count > 1:
             with ThreadPoolExecutor(max_workers=worker_count) as executor:

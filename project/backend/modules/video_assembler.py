@@ -855,8 +855,16 @@ class VideoAssembler:
         h_orig, w_orig = img.shape[:2]
         
         # Calculate pixel coordinates for the focus center in original image
-        if focus_box and len(focus_box) == 4:
-            ymin, xmin, ymax, xmax = focus_box
+        main_focus = None
+        if focus_box:
+            if isinstance(focus_box, list):
+                if len(focus_box) > 0 and isinstance(focus_box[0], list):
+                    main_focus = focus_box[0]
+                else:
+                    main_focus = focus_box
+
+        if main_focus and len(main_focus) == 4:
+            ymin, xmin, ymax, xmax = main_focus
             ymin_px = int(ymin * h_orig / 1000)
             xmin_px = int(xmin * w_orig / 1000)
             ymax_px = int(ymax * h_orig / 1000)
@@ -881,22 +889,22 @@ class VideoAssembler:
         if m:
             panel_id = m.group(1)
             
-        sticker_path = panel_path.parent.parent / "stickers" / f"sticker_{panel_id}.png"
+        sticker_dir = panel_path.parent.parent / "stickers"
+        sticker_paths = sorted(list(sticker_dir.glob(f"sticker_{panel_id}_*.png")))
+        if not sticker_paths:
+            old_sticker = sticker_dir / f"sticker_{panel_id}.png"
+            if old_sticker.exists():
+                sticker_paths = [old_sticker]
         
-        if sticker_path.exists():
+        if sticker_paths:
             try:
-                # Load transparent sticker (unchanged BGRA)
-                sticker_img = cv2.imread(str(sticker_path), cv2.IMREAD_UNCHANGED)
-                if sticker_img is not None and sticker_img.shape[2] == 4:
-                    # Convert BGR to RGB for the sticker, keeping alpha separate
-                    sticker_rgb = cv2.cvtColor(sticker_img[:, :, :3], cv2.COLOR_BGR2RGB)
-                    sticker_alpha = sticker_img[:, :, 3]
-                    sticker_bounds = self._alpha_bounds(sticker_alpha)
-                    if sticker_bounds is not None:
-                        _, _, content_w, content_h = sticker_bounds
-                    else:
-                        content_w, content_h = sticker_img.shape[1], sticker_img.shape[0]
-                    
+                loaded_stickers = []
+                for spath in sticker_paths[:5]: # Max 5 stickers
+                    st_img = cv2.imread(str(spath), cv2.IMREAD_UNCHANGED)
+                    if st_img is not None and st_img.shape[2] == 4:
+                        loaded_stickers.append(st_img)
+                        
+                if loaded_stickers:
                     # 1. Background blurred panel (darkened to contrast characters)
                     img_blur = cv2.GaussianBlur(img, (51, 51), 0)
                     img_blur = (img_blur * 0.25).astype(np.uint8) # Darken significantly
@@ -916,31 +924,55 @@ class VideoAssembler:
                     resized_center_x = int(center_x * scale_bg)
                     resized_center_y = int(center_y * scale_bg)
                     
-                    # Pre-calculate sticker size scaling
-                    st_h, st_w = sticker_img.shape[:2]
-                    max_sticker_h = int(target_h * 0.58)
-                    max_sticker_w = int(target_w * 0.80)
-                    scale_st = min(
-                        max_sticker_h / max(1, content_h),
-                        max_sticker_w / max(1, content_w)
-                    )
-                    scale_st = max(scale_st, 0.1)
-                    new_st_w = max(1, int(round(st_w * scale_st)))
-                    new_st_h = max(1, int(round(st_h * scale_st)))
+                    processed_stickers = []
+                    for idx, sticker_img in enumerate(loaded_stickers):
+                        sticker_rgb = cv2.cvtColor(sticker_img[:, :, :3], cv2.COLOR_BGR2RGB)
+                        sticker_alpha = sticker_img[:, :, 3]
                         
-                    # Resize sticker components once
-                    st_resized_rgb = self._resize_with_quality(sticker_rgb, (new_st_w, new_st_h))
-                    st_resized_alpha = self._resize_with_quality(sticker_alpha, (new_st_w, new_st_h))
-                    st_alpha_norm = st_resized_alpha[:, :, None] / 255.0  # Normalized (H, W, 1)
-                    shadow_alpha = cv2.GaussianBlur(st_resized_alpha, (0, 0), max(2.0, new_st_h * 0.012))
-                    shadow_alpha = np.clip(shadow_alpha.astype(np.float32) * 0.40, 0, 255).astype(np.uint8)
-                    shadow_alpha_norm = shadow_alpha[:, :, None] / 255.0
-                    shadow_rgb = np.zeros_like(st_resized_rgb)
-                    
-                    # Pre-calculate centered final position
-                    final_x = (target_w - new_st_w) // 2
-                    # Move to middle/top of screen instead of bottom
-                    final_y_base = int((target_h - new_st_h) * 0.35)
+                        sticker_bounds = self._alpha_bounds(sticker_alpha)
+                        if sticker_bounds is not None:
+                            _, _, content_w, content_h = sticker_bounds
+                        else:
+                            content_w, content_h = sticker_img.shape[1], sticker_img.shape[0]
+                            
+                        st_h, st_w = sticker_img.shape[:2]
+                        scale_factor = 0.85
+                        max_sticker_h = int(target_h * scale_factor)
+                        max_sticker_w = int(target_w * scale_factor)
+                        
+                        scale_st = min(
+                            max_sticker_h / max(1, content_h),
+                            max_sticker_w / max(1, content_w)
+                        )
+                        scale_st = max(scale_st, 0.1)
+                        new_st_w = max(1, int(round(st_w * scale_st)))
+                        new_st_h = max(1, int(round(st_h * scale_st)))
+                            
+                        st_resized_rgb = self._resize_with_quality(sticker_rgb, (new_st_w, new_st_h))
+                        st_resized_alpha = self._resize_with_quality(sticker_alpha, (new_st_w, new_st_h))
+                        st_alpha_norm = st_resized_alpha[:, :, None] / 255.0
+                        
+                        shadow_alpha = cv2.GaussianBlur(st_resized_alpha, (0, 0), max(2.0, new_st_h * 0.012))
+                        shadow_alpha = np.clip(shadow_alpha.astype(np.float32) * 0.40, 0, 255).astype(np.uint8)
+                        shadow_alpha_norm = shadow_alpha[:, :, None] / 255.0
+                        shadow_rgb = np.zeros_like(st_resized_rgb)
+                        
+                        final_x = (target_w - new_st_w) // 2
+                        final_y_base = (target_h - new_st_h) // 2
+                            
+                        processed_stickers.append({
+                            "rgb": st_resized_rgb,
+                            "alpha": st_resized_alpha,
+                            "alpha_norm": st_alpha_norm,
+                            "sh_rgb": shadow_rgb,
+                            "sh_alpha": shadow_alpha,
+                            "sh_alpha_norm": shadow_alpha_norm,
+                            "w": new_st_w,
+                            "h": new_st_h,
+                            "final_x": final_x,
+                            "final_y_base": final_y_base,
+                            "idx": idx
+                        })
                     
                     use_snap_zoom = random.random() > 0.3
                     
@@ -986,48 +1018,60 @@ class VideoAssembler:
                         if cropped.shape[:2] != (target_h, target_w):
                             cropped = self._resize_with_quality(cropped, (target_w, target_h))
                             
-                        # Calculate current sticker y-coordinate (slide-up + floating idle)
-                        slide_dur = 0.5
-                        if t < slide_dur:
-                            progress_slide = t / slide_dur
-                            eased_slide = 1 - (1 - progress_slide) ** 2
-                            # Slide up slightly (100 pixels) instead of from the very bottom
-                            curr_y = int(final_y_base + 100 * (1.0 - eased_slide))
-                        else:
-                            import math
-                            y_offset = int(15 * math.sin((t - slide_dur) * 0.4 * 2 * math.pi))
-                            curr_y = final_y_base + y_offset
+                        if processed_stickers:
+                            num_stickers = len(processed_stickers)
+                            sticker_duration = duration / num_stickers
+                            active_idx = min(int(t / sticker_duration), num_stickers - 1)
+                            
+                            p_st = processed_stickers[active_idx]
+                            local_t = t - (active_idx * sticker_duration)
+                            local_progress = local_t / sticker_duration
+                            
+                            idx = p_st["idx"]
+                            new_st_w = p_st["w"]
+                            new_st_h = p_st["h"]
+                            final_x = p_st["final_x"]
+                            final_y_base = p_st["final_y_base"]
+                            
+                            slide_dur = min(0.5, sticker_duration * 0.25)
+                            if local_t < slide_dur and slide_dur > 0:
+                                progress_slide = local_t / slide_dur
+                                eased_slide = 1 - (1 - progress_slide) ** 2
+                                curr_y = int(final_y_base + 100 * (1.0 - eased_slide))
+                            else:
+                                import math
+                                phase = idx * math.pi
+                                y_offset = int(15 * math.sin((local_t - slide_dur) * 0.4 * 2 * math.pi + phase))
+                                curr_y = final_y_base + y_offset
 
-                        # Apply opposing parallax and breathing scale
-                        parallax_x = -int(pan_x * 0.6)
-                        parallax_y = -int(pan_y * 0.6)
-                        
-                        breathing_scale = 1.0 + 0.04 * progress
-                        st_w_b = int(new_st_w * breathing_scale)
-                        st_h_b = int(new_st_h * breathing_scale)
-                        
-                        curr_st_rgb = self._resize_with_quality(st_resized_rgb, (st_w_b, st_h_b)) if breathing_scale > 1.01 else st_resized_rgb
-                        curr_st_alpha = self._resize_with_quality(st_resized_alpha, (st_w_b, st_h_b)) if breathing_scale > 1.01 else st_resized_alpha
-                        curr_st_alpha_norm = curr_st_alpha[:, :, None] / 255.0
-                        
-                        curr_sh_rgb = self._resize_with_quality(shadow_rgb, (st_w_b, st_h_b)) if breathing_scale > 1.01 else shadow_rgb
-                        curr_sh_alpha = self._resize_with_quality(shadow_alpha, (st_w_b, st_h_b)) if breathing_scale > 1.01 else shadow_alpha
-                        curr_sh_alpha_norm = curr_sh_alpha[:, :, None] / 255.0
+                            # Apply opposing parallax and breathing scale
+                            parallax_x = -int(pan_x * 0.6)
+                            parallax_y = -int(pan_y * 0.6)
+                            
+                            breathing_scale = 1.0 + 0.04 * local_progress
+                            st_w_b = int(new_st_w * breathing_scale)
+                            st_h_b = int(new_st_h * breathing_scale)
+                            
+                            curr_st_rgb = self._resize_with_quality(p_st["rgb"], (st_w_b, st_h_b)) if breathing_scale > 1.01 else p_st["rgb"]
+                            curr_st_alpha_norm = self._resize_with_quality(p_st["alpha"], (st_w_b, st_h_b))[:, :, None] / 255.0 if breathing_scale > 1.01 else p_st["alpha_norm"]
+                            
+                            curr_sh_rgb = self._resize_with_quality(p_st["sh_rgb"], (st_w_b, st_h_b)) if breathing_scale > 1.01 else p_st["sh_rgb"]
+                            curr_sh_alpha_norm = self._resize_with_quality(p_st["sh_alpha"], (st_w_b, st_h_b))[:, :, None] / 255.0 if breathing_scale > 1.01 else p_st["sh_alpha_norm"]
 
-                        cropped = self._overlay_rgba(
-                            cropped,
-                            curr_sh_rgb,
-                            curr_sh_alpha_norm,
-                            final_x + 10 + parallax_x - int((st_w_b - new_st_w)/2),
-                            curr_y + 12 + parallax_y - int((st_h_b - new_st_h)/2),
-                        )
-                        cropped = self._overlay_rgba(
-                            cropped,
-                            curr_st_rgb,
-                            curr_st_alpha_norm,
-                            final_x + parallax_x - int((st_w_b - new_st_w)/2),
-                            curr_y + parallax_y - int((st_h_b - new_st_h)/2),
-                        )
+                            cropped = self._overlay_rgba(
+                                cropped,
+                                curr_sh_rgb,
+                                curr_sh_alpha_norm,
+                                final_x + 10 + parallax_x - int((st_w_b - new_st_w)/2),
+                                curr_y + 12 + parallax_y - int((st_h_b - new_st_h)/2),
+                            )
+                            cropped = self._overlay_rgba(
+                                cropped,
+                                curr_st_rgb,
+                                curr_st_alpha_norm,
+                                final_x + parallax_x - int((st_w_b - new_st_w)/2),
+                                curr_y + parallax_y - int((st_h_b - new_st_h)/2),
+                            )
                             
                         return cropped
                         

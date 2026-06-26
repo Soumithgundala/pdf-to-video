@@ -192,9 +192,19 @@ def _auto_focus_rect(img: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
     if img is None or img.size == 0:
         return None
 
-    height, width = img.shape[:2]
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    orig_height, orig_width = img.shape[:2]
+    
+    # Fast path: resize for saliency computation
+    scale = min(1.0, 384.0 / max(orig_height, orig_width))
+    if scale < 1.0:
+        proc_w, proc_h = int(orig_width * scale), int(orig_height * scale)
+        small_img = cv2.resize(img, (proc_w, proc_h), interpolation=cv2.INTER_AREA)
+    else:
+        small_img = img
+
+    height, width = small_img.shape[:2]
+    gray = cv2.cvtColor(small_img, cv2.COLOR_BGR2GRAY)
+    hsv = cv2.cvtColor(small_img, cv2.COLOR_BGR2HSV)
 
     edge_map = cv2.Canny(gray, 40, 120)
     sat_map = hsv[:, :, 1]
@@ -206,7 +216,9 @@ def _auto_focus_rect(img: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
 
     saliency = edge_map * 0.6 + sat_map * 0.25 + dark_map * 0.15
     saliency = cv2.GaussianBlur(saliency, (0, 0), 6.0)
-    threshold = max(0.16, float(np.percentile(saliency, 82)))
+    
+    # Subsampling or smaller percentile for speed
+    threshold = max(0.16, float(np.percentile(saliency[::2, ::2], 82)))
     mask = (saliency >= threshold).astype(np.uint8) * 255
 
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
@@ -228,7 +240,7 @@ def _auto_focus_rect(img: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
         ch = int(stats[idx, cv2.CC_STAT_HEIGHT])
         area = int(stats[idx, cv2.CC_STAT_AREA])
 
-        if area < max(800, int(height * width * 0.002)):
+        if area < max(40, int(height * width * 0.002)):
             continue
         if area > height * width * 0.82:
             continue
@@ -242,7 +254,7 @@ def _auto_focus_rect(img: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
         if x <= 2 or y <= 2 or x + cw >= width - 3 or y + ch >= height - 3:
             border_penalty = 0.72
 
-        score = area * mean_saliency * border_penalty + max(0.0, 1200.0 - distance) * 0.6
+        score = area * mean_saliency * border_penalty + max(0.0, 400.0 - distance) * 0.6
         if score > best_score:
             best_score = score
             best_bbox = (x, y, x + cw, y + ch)
@@ -250,11 +262,19 @@ def _auto_focus_rect(img: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
     if best_bbox is None:
         return None
 
-    expanded = _expand_bounds(best_bbox, width, height, pad_ratio=0.38, min_pad=48)
+    if scale < 1.0:
+        best_bbox = (
+            int(best_bbox[0] / scale),
+            int(best_bbox[1] / scale),
+            int(best_bbox[2] / scale),
+            int(best_bbox[3] / scale)
+        )
+
+    expanded = _expand_bounds(best_bbox, orig_width, orig_height, pad_ratio=0.38, min_pad=48)
     x1, y1, x2, y2 = expanded
     box_w = x2 - x1
     box_h = y2 - y1
-    if (box_w * box_h) > height * width * 0.9:
+    if (box_w * box_h) > orig_height * orig_width * 0.9:
         return None
 
     shrink = 0.72
@@ -267,8 +287,8 @@ def _auto_focus_rect(img: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
     tight = (
         max(0, center_x - half_w),
         max(0, center_y - half_h),
-        min(width, center_x + half_w),
-        min(height, center_y + half_h),
+        min(orig_width, center_x + half_w),
+        min(orig_height, center_y + half_h),
     )
     return tight
 
