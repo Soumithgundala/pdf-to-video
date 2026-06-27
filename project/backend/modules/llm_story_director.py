@@ -424,8 +424,8 @@ Generate ONLY valid JSON output matching the required schema."""
 
             # Validate script word count
             word_count = len(part.script.split())
-            if word_count < 90 or word_count > 160:
-                logger.warning(f"Part {part.part_number} script has {word_count} words (target: 110-140)")
+            if word_count < 65 or word_count > 125:
+                logger.warning(f"Part {part.part_number} script has {word_count} words (target: 80-105)")
 
         # Validate focus areas
         if result.panel_focus_areas:
@@ -459,7 +459,7 @@ Generate ONLY valid JSON output matching the required schema."""
 You must:
 1. Read and understand the manga narrative from the provided pages.
 2. Divide the story into exactly 3 sequential parts.
-3. Write a dramatic, lore-rich voiceover script for each part, divided by selected panels. The total script of the part (all segments joined) must be between 110-140 words.
+3. Write a dramatic, lore-rich voiceover script for each part, divided by selected panels. The total script of the part (all segments joined) must be between 80-105 words.
 4. Select 8-12 panels from the manga pages that best illustrate each part, and assign matching voiceover sentences to each. (Reuse panels if necessary).
 5. Identify the precise coordinates of THREE to FOUR distinct focus areas (e.g., individual character faces, upper bodies, close-ups, action poses, or key events) for EACH panel to be used as character sticker bounding boxes. More focus areas = more stickers in the final video. DO NOT EVER SELECT TEXT CLOUDS, WORD CLOUDS, OR SPEECH BUBBLES.
 6. Select an appropriate background music mood and optional sound effects.
@@ -471,7 +471,7 @@ CRITICAL CONTENT & TONE RULES:
 - Emotional Build-up: Build a rhythm (Mystery -> Reveal -> Reaction -> Cliffhanger). End Part 1 and Part 2 with a massive cliffhanger (e.g., "But what happens next completely changes the story...").
 - Target a smart, dedicated audience. Assume they know all the lore, terms (Haki, Devil Fruits, Will of D, etc.), and characters.
 - Incorporate Reddit-style discussion, fan theories, and Twitter-style analysis/hype into the recap. Bring up speculative theories, community consensus, power-scaling questions, or hot takes.
-- Short Chapter / Low Content Handling: If the manga chapter is short, has very few panels, or the action/story content is too low to naturally divide into 3 parts, you MUST still generate exactly 3 parts. To satisfy the 110-140 words requirement per part, expand the script into an engaging discussion.
+- Short Chapter / Low Content Handling: If the manga chapter is short, has very few panels, or the action/story content is too low to naturally divide into 3 parts, you MUST still generate exactly 3 parts. To satisfy the 80-105 words requirement per part, expand the script into an engaging discussion.
 - DO NOT select the same panel multiple times across parts, UNLESS the total number of panels is less than 24. If the total number of panels is low, you must reuse or overlap panels across parts to ensure each of the 3 parts has at least 8 panels selected.
 - Unordered Panel Handling: The uploaded manga pages and panels (P1, P2, P3...) might occasionally be out of order in the PDF due to scanner or multi-page layout shifts. You must inspect the narrative contents of the panels, reconstruct the correct story sequence, and order the panel IDs (`selected_panels` and `script_segments`) chronologically according to the correct story timeline, rather than sorting them numerically. Aranging them in correct story sequence will ensure the generated video is flawless.
 - Explain the story deeply: describe the specific actions, character emotions, dialogue impact, and combat details in the panels.
@@ -524,7 +524,7 @@ CRITICAL FORMAT RULES:
 - character_prompts: A dictionary mapping every panel ID (P1, P2, etc.) to a descriptive character-specific prompt for colorizing. It MUST describe the One Piece characters present in that panel and their standard, canonical colors (e.g. red vest for Luffy, green hair for Zoro, orange hair for Nami, blonde hair for Sanji, etc.). Always append "colored manga panel, anime style, highly detailed" to the prompt. If no main characters are present, describe the background/scene (e.g. "wood ship deck, blue sky, colored manga panel, anime style, highly detailed").
 - Each part must have exactly 8-12 panels selected in chronological narrative sequence (even if they are out of order in the PDF labels). With 3-4 stickers per panel, this yields 30-40+ unique stickers per video part.
 - Panel IDs must match the sequential panel IDs (format: P1, P2, P3, etc.).
-- script_segments: Provide script text split by panel. The joined script text across all segments must be 110-140 words for natural pacing (~60-70 seconds spoken).
+- script_segments: Provide script text split by panel. The joined script text across all segments must be 80-105 words for natural pacing (~45-60 seconds spoken).
 - music_mood: Choose "sad_violin" for emotional/tragic scenes, "upbeat_adventure" for lively/adventure transitions, "dramatic" for tense lore/revelations, "binks_brew" for cheerful pirate celebrations or sailing moments, "drum_of_libration" for high-hype fights or epic action, "yo_ho_ho_ho" for comedic or lighthearted scenes.
 - sound_effects: Add sound effects like "yohoho", "sword_clash", "bass_hit", "wind", "footsteps", "unsheathe", "heartbeat", "explosion" if they match the action. Use "bass_hit" right before big reveals.
 - DO NOT select the same panel multiple times across parts, unless total panels are very low.
@@ -538,7 +538,7 @@ The document contains {total_panels} sequential panels with IDs P1 through P{tot
 
 For each of the 3 parts:
 1. Select 8-12 panels that best illustrate the narrative in sequence. (If total panels is less than 24, you must reuse or overlap panels across parts to ensure each of the 3 parts has at least 8 panels).
-2. Write a deep-dive, dramatic voiceover script (110-140 words total) segmented by each selected panel. Start Part 1 with a massive hook. Tell a suspenseful story instead of reading dialogue. Build emotional tension. End with a cliffhanger.
+2. Write a deep-dive, dramatic voiceover script (80-105 words total) segmented by each selected panel. Start Part 1 with a massive hook. Tell a suspenseful story instead of reading dialogue. Build emotional tension. End with a cliffhanger.
 3. Choose a music_mood (sad_violin, upbeat_adventure, dramatic, binks_brew, drum_of_libration, or yo_ho_ho_ho) and optional sound_effects (bass_hit, wind, footsteps, unsheathe, heartbeat, explosion).
 4. For all {total_panels} panels, locate the precise bounding box coordinates of THREE to FOUR distinct focal subjects (e.g., individual character faces, upper bodies, action poses, or key close-ups) and specify them in the panel_focus_areas dictionary as `[[ymin1, xmin1, ymax1, xmax1], [ymin2, xmin2, ymax2, xmax2], [ymin3, xmin3, ymax3, xmax3], ...]`. Be extremely precise and avoid defaulting to [0, 0, 1000, 1000] so that subjects can be cleanly extracted as stickers. More focus areas = more stickers = better video. DO NOT INCLUDE TEXT, SPEECH BUBBLES, OR WORD CLOUDS.
 5. For all {total_panels} panels, specify a descriptive prompt for character-specific colorization in the character_prompts dictionary, identifying which One Piece characters are in the panel and describing their standard colors.
