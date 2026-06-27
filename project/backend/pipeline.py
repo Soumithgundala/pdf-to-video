@@ -630,13 +630,61 @@ class MangaPipeline:
             elif isinstance(focus_boxes, list) and len(focus_boxes) > 0 and not isinstance(focus_boxes[0], list):
                 # Fallback if it somehow still returned a single flat box
                 focus_boxes = [focus_boxes]
-                
-            for idx, focus_box in enumerate(focus_boxes[:5]): # Max 5 stickers per panel
+
+            # Target 3-4 stickers per panel for 30-40 total per video
+            MIN_STICKERS_PER_PANEL = 3
+            MAX_STICKERS_PER_PANEL = 6
+
+            saved_count = 0
+            for idx, focus_box in enumerate(focus_boxes[:MAX_STICKERS_PER_PANEL]):
                 sticker_img = extract_clean_sticker(img, focus_box)
                 if sticker_img is not None and sticker_img.size > 0:
                     current_sticker_path = stickers_dir / f"sticker_{panel_id}_{idx}.png"
                     cv2.imwrite(str(current_sticker_path), sticker_img)
+                    saved_count += 1
                     logger.info(f"Saved cleaned sticker to stickers/{current_sticker_path.name}")
+
+            # Auto-generate additional stickers if LLM provided fewer than target
+            if saved_count < MIN_STICKERS_PER_PANEL:
+                from modules.sticker_extractor import _auto_focus_rect, _expand_bounds
+                h, w = img.shape[:2]
+                # Generate crops from different quadrants of the panel
+                quadrants = [
+                    (0, 0, w // 2, h // 2),       # top-left
+                    (w // 2, 0, w, h // 2),        # top-right
+                    (0, h // 2, w // 2, h),        # bottom-left
+                    (w // 2, h // 2, w, h),        # bottom-right
+                    (w // 4, h // 4, 3*w//4, 3*h//4),  # center
+                ]
+                for q_idx, (qx1, qy1, qx2, qy2) in enumerate(quadrants):
+                    if saved_count >= MIN_STICKERS_PER_PANEL:
+                        break
+                    quadrant_img = img[qy1:qy2, qx1:qx2]
+                    if quadrant_img.size == 0:
+                        continue
+                    auto_rect = _auto_focus_rect(quadrant_img)
+                    if auto_rect is not None:
+                        # Map quadrant-local coordinates back to full image
+                        ar_x1, ar_y1, ar_x2, ar_y2 = auto_rect
+                        full_x1, full_y1 = qx1 + ar_x1, qy1 + ar_y1
+                        full_x2, full_y2 = qx1 + ar_x2, qy1 + ar_y2
+                        # Convert to normalized 0-1000 focus box format
+                        norm_box = [
+                            int(full_y1 * 1000 / h),  # ymin
+                            int(full_x1 * 1000 / w),  # xmin
+                            int(full_y2 * 1000 / h),  # ymax
+                            int(full_x2 * 1000 / w),  # xmax
+                        ]
+                        sticker_img = extract_clean_sticker(img, norm_box)
+                        if sticker_img is not None and sticker_img.size > 0:
+                            sticker_idx = saved_count
+                            current_sticker_path = stickers_dir / f"sticker_{panel_id}_{sticker_idx}.png"
+                            cv2.imwrite(str(current_sticker_path), sticker_img)
+                            saved_count += 1
+                            logger.info(f"Auto-generated sticker to stickers/{current_sticker_path.name}")
+
+            logger.info(f"Panel {panel_id}: {saved_count} stickers extracted.")
+
 
         if worker_count > 1:
             with ThreadPoolExecutor(max_workers=worker_count) as executor:

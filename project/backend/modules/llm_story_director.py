@@ -460,16 +460,19 @@ You must:
 1. Read and understand the manga narrative from the provided pages.
 2. Divide the story into exactly 3 sequential parts.
 3. Write a dramatic, lore-rich voiceover script for each part, divided by selected panels. The total script of the part (all segments joined) must be between 110-140 words.
-4. Select 5-7 panels from the manga pages that best illustrate each part, and assign matching voiceover sentences to each.
-5. Identify the precise coordinates of TWO distinct focus areas (e.g., the main character's face/upper body, another character, close ups, or key events) for EACH panel to be used as character sticker bounding boxes.
+4. Select 8-12 panels from the manga pages that best illustrate each part, and assign matching voiceover sentences to each. (Reuse panels if necessary).
+5. Identify the precise coordinates of THREE to FOUR distinct focus areas (e.g., individual character faces, upper bodies, close-ups, action poses, or key events) for EACH panel to be used as character sticker bounding boxes. More focus areas = more stickers in the final video. DO NOT EVER SELECT TEXT CLOUDS, WORD CLOUDS, OR SPEECH BUBBLES.
 6. Select an appropriate background music mood and optional sound effects.
 7. For EACH panel in the manga (from P1 to P{total_panels}), identify the major One Piece characters present in the panel and describe their iconic visual details and canonical colors (e.g., "Monkey D. Luffy in red vest, straw hat, blue shorts", "Roronoa Zoro with green hair, green coat, swords", "Nami with orange hair", "Sanji with blonde hair", "Brook skeleton with black coat", etc.) to be used as a colorization prompt. Use any provided 'Character Reference Image' files to determine the exact colors (skin, clothing, hair, accessories) of specific characters in the panel prompts.
 
 CRITICAL CONTENT & TONE RULES:
+- The Hook: Start Part 1 with a massive hook (e.g., "Luffy just discovered something that changes everything..." or "The Holy Knights finally made their move..."). Do not start with exposition.
+- Storytelling > Dialogue: Do not simply read speech bubbles. Tell a story. Describe what characters are feeling and doing, with suspense (e.g., "He isn't worried at all. In fact... he wants the situation to become even more dangerous.").
+- Emotional Build-up: Build a rhythm (Mystery -> Reveal -> Reaction -> Cliffhanger). End Part 1 and Part 2 with a massive cliffhanger (e.g., "But what happens next completely changes the story...").
 - Target a smart, dedicated audience. Assume they know all the lore, terms (Haki, Devil Fruits, Will of D, etc.), and characters.
-- Incorporate Reddit-style discussion, fan theories, and Twitter-style analysis/hype into the recap. Bring up speculative theories, community consensus, power-scaling questions, or hot takes (e.g., "The fan community has been debating if this means...", "Twitter erupted in excitement when this dropped...", "A popular Reddit theory suggests...", "Fans are going wild analyzing the implications of..."). This makes the script feel like a modern, interactive online deep-dive.
-- Short Chapter / Low Content Handling: If the manga chapter is short, has very few panels (e.g. less than 15-20 panels), or the action/story content is too low to naturally divide into 3 parts, you MUST still generate exactly 3 parts. To satisfy the 110-140 words requirement per part in this case, expand the script of each part into an engaging discussion featuring community reactions, fan theories, and Reddit/X (Twitter) discussion threads about the events or characters in these panels (e.g. discuss what fans are saying about the panels, quote hypothetical Reddit discussions like "On Reddit, fans are arguing whether this confirms...", and reference popular X comments). This ensures that even with low manga content, the videos are a full, engaging, minute-long discussion/deep-dive for each of the 3 parts.
-- DO NOT select the same panel multiple times across parts, UNLESS the total number of panels is less than 15. If the total number of panels is less than 15, you must reuse or overlap panels across parts to ensure each of the 3 parts has at least 5 panels selected.
+- Incorporate Reddit-style discussion, fan theories, and Twitter-style analysis/hype into the recap. Bring up speculative theories, community consensus, power-scaling questions, or hot takes.
+- Short Chapter / Low Content Handling: If the manga chapter is short, has very few panels, or the action/story content is too low to naturally divide into 3 parts, you MUST still generate exactly 3 parts. To satisfy the 110-140 words requirement per part, expand the script into an engaging discussion.
+- DO NOT select the same panel multiple times across parts, UNLESS the total number of panels is less than 24. If the total number of panels is low, you must reuse or overlap panels across parts to ensure each of the 3 parts has at least 8 panels selected.
 - Unordered Panel Handling: The uploaded manga pages and panels (P1, P2, P3...) might occasionally be out of order in the PDF due to scanner or multi-page layout shifts. You must inspect the narrative contents of the panels, reconstruct the correct story sequence, and order the panel IDs (`selected_panels` and `script_segments`) chronologically according to the correct story timeline, rather than sorting them numerically. Aranging them in correct story sequence will ensure the generated video is flawless.
 - Explain the story deeply: describe the specific actions, character emotions, dialogue impact, and combat details in the panels.
 - Tone should be high-energy, exciting, full of suspense, and highly conversational, like an epic YouTube manga recap.
@@ -481,8 +484,8 @@ CRITICAL CONTENT & TONE RULES:
 Output a valid JSON object with this exact structure:
 {
   "panel_focus_areas": {
-    "P1": [[ymin1, xmin1, ymax1, xmax1], [ymin2, xmin2, ymax2, xmax2]],
-    "P2": [[ymin1, xmin1, ymax1, xmax1], [ymin2, xmin2, ymax2, xmax2]],
+    "P1": [[ymin1, xmin1, ymax1, xmax1], [ymin2, xmin2, ymax2, xmax2], [ymin3, xmin3, ymax3, xmax3]],
+    "P2": [[ymin1, xmin1, ymax1, xmax1], [ymin2, xmin2, ymax2, xmax2], [ymin3, xmin3, ymax3, xmax3], [ymin4, xmin4, ymax4, xmax4]],
     ...
   },
   "character_prompts": {
@@ -508,7 +511,7 @@ Output a valid JSON object with this exact structure:
       "sound_effects": [
         {
           "panel_id": "P2",
-          "effect": "yohoho" or "sword_clash"
+          "effect": "yohoho" or "sword_clash" or "bass_hit" or "wind" or "footsteps" or "unsheathe" or "heartbeat" or "explosion"
         }
       ]
     },
@@ -517,14 +520,14 @@ Output a valid JSON object with this exact structure:
 }
 
 CRITICAL FORMAT RULES:
-- panel_focus_areas: For each panel P1, P2, ... up to P{total_panels}, locate the bounding boxes wrapping TWO distinct focal subjects (e.g., characters' faces, upper bodies, close-ups, or key events). Output a list of TWO normalized bounding boxes `[[ymin1, xmin1, ymax1, xmax1], [ymin2, xmin2, ymax2, xmax2]]` from 0 to 1000 (0 is top, 0 is left, 1000 is bottom, 1000 is right). You must be extremely precise and wrap the subjects tightly. Avoid outputting [0, 0, 1000, 1000] (the whole panel) unless the panel has no distinct features.
+- panel_focus_areas: For each panel P1, P2, ... up to P{total_panels}, locate the bounding boxes wrapping THREE to FOUR distinct focal subjects (e.g., individual character faces, upper bodies, close-ups, action poses, or key events). Output a list of 3-4 normalized bounding boxes `[[ymin1, xmin1, ymax1, xmax1], [ymin2, xmin2, ymax2, xmax2], [ymin3, xmin3, ymax3, xmax3], ...]` from 0 to 1000 (0 is top, 0 is left, 1000 is bottom, 1000 is right). You must be extremely precise and wrap the subjects tightly. If the panel has fewer than 3 distinct subjects, provide as many as you can find (minimum 1). Avoid outputting [0, 0, 1000, 1000] (the whole panel) unless the panel has no distinct features. DO NOT INCLUDE TEXT CLOUDS OR SPEECH BUBBLES.
 - character_prompts: A dictionary mapping every panel ID (P1, P2, etc.) to a descriptive character-specific prompt for colorizing. It MUST describe the One Piece characters present in that panel and their standard, canonical colors (e.g. red vest for Luffy, green hair for Zoro, orange hair for Nami, blonde hair for Sanji, etc.). Always append "colored manga panel, anime style, highly detailed" to the prompt. If no main characters are present, describe the background/scene (e.g. "wood ship deck, blue sky, colored manga panel, anime style, highly detailed").
-- Each part must have exactly 5-7 panels selected in chronological narrative sequence (even if they are out of order in the PDF labels).
+- Each part must have exactly 8-12 panels selected in chronological narrative sequence (even if they are out of order in the PDF labels). With 3-4 stickers per panel, this yields 30-40+ unique stickers per video part.
 - Panel IDs must match the sequential panel IDs (format: P1, P2, P3, etc.).
 - script_segments: Provide script text split by panel. The joined script text across all segments must be 110-140 words for natural pacing (~60-70 seconds spoken).
 - music_mood: Choose "sad_violin" for emotional/tragic scenes, "upbeat_adventure" for lively/adventure transitions, "dramatic" for tense lore/revelations, "binks_brew" for cheerful pirate celebrations or sailing moments, "drum_of_libration" for high-hype fights or epic action, "yo_ho_ho_ho" for comedic or lighthearted scenes.
-- sound_effects: Add Brook's signature laugh "yohoho" or sword clashing "sword_clash" only if they match the action in the panel (optional).
-- DO NOT select the same panel multiple times across parts.
+- sound_effects: Add sound effects like "yohoho", "sword_clash", "bass_hit", "wind", "footsteps", "unsheathe", "heartbeat", "explosion" if they match the action. Use "bass_hit" right before big reveals.
+- DO NOT select the same panel multiple times across parts, unless total panels are very low.
 - Each part must cover a distinct segment of the story in sequence."""
 
     def _get_user_prompt_text(self, total_panels: int) -> str:
@@ -534,10 +537,10 @@ CRITICAL FORMAT RULES:
 The document contains {total_panels} sequential panels with IDs P1 through P{total_panels}.
 
 For each of the 3 parts:
-1. Select 5-7 panels that best illustrate the narrative in sequence. (If total panels is less than 15, you must reuse or overlap panels across parts to ensure each of the 3 parts has at least 5 panels).
-2. Write a deep-dive, dramatic voiceover script (110-140 words total) segmented by each selected panel (1-2 sentences per panel). If the story is too short or too low-action for 3 parts, write the script as an engaging discussion with Reddit discussions/theories based on the current episode/chapter, speculating on fan theories and reactions from platforms like Reddit or X.
-3. Choose a music_mood (sad_violin, upbeat_adventure, dramatic, binks_brew, drum_of_libration, or yo_ho_ho_ho) and optional sound_effects.
-4. For all {total_panels} panels, locate the precise bounding box coordinates `[[ymin1, xmin1, ymax1, xmax1], [ymin2, xmin2, ymax2, xmax2]]` of TWO distinct focal subjects (e.g., characters' faces, upper bodies, or key close-ups) and specify them in the panel_focus_areas dictionary. Be extremely precise and avoid defaulting to [0, 0, 1000, 1000] so that subjects can be cleanly extracted as stickers.
+1. Select 8-12 panels that best illustrate the narrative in sequence. (If total panels is less than 24, you must reuse or overlap panels across parts to ensure each of the 3 parts has at least 8 panels).
+2. Write a deep-dive, dramatic voiceover script (110-140 words total) segmented by each selected panel. Start Part 1 with a massive hook. Tell a suspenseful story instead of reading dialogue. Build emotional tension. End with a cliffhanger.
+3. Choose a music_mood (sad_violin, upbeat_adventure, dramatic, binks_brew, drum_of_libration, or yo_ho_ho_ho) and optional sound_effects (bass_hit, wind, footsteps, unsheathe, heartbeat, explosion).
+4. For all {total_panels} panels, locate the precise bounding box coordinates of THREE to FOUR distinct focal subjects (e.g., individual character faces, upper bodies, action poses, or key close-ups) and specify them in the panel_focus_areas dictionary as `[[ymin1, xmin1, ymax1, xmax1], [ymin2, xmin2, ymax2, xmax2], [ymin3, xmin3, ymax3, xmax3], ...]`. Be extremely precise and avoid defaulting to [0, 0, 1000, 1000] so that subjects can be cleanly extracted as stickers. More focus areas = more stickers = better video. DO NOT INCLUDE TEXT, SPEECH BUBBLES, OR WORD CLOUDS.
 5. For all {total_panels} panels, specify a descriptive prompt for character-specific colorization in the character_prompts dictionary, identifying which One Piece characters are in the panel and describing their standard colors.
 6. Ensure the parts form a seamless, continuous story flow. Never mention part numbers or divisions in the script text.
 7. Keep the tone engaging and targeted at seasoned One Piece manga readers.

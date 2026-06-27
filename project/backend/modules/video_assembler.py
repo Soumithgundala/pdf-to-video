@@ -54,7 +54,14 @@ DEFAULT_ASSETS = {
     },
     "sfx": {
         "yohoho": "https://www.myinstants.com/media/sounds/yo-ho-ho.mp3",
-        "sword_clash": "https://www.soundboard.com/handler/DownLoadTrack.ashx?cliptrackid=274987"
+        "sword_clash": "https://www.soundboard.com/handler/DownLoadTrack.ashx?cliptrackid=274987",
+        "swoosh": "https://www.myinstants.com/media/sounds/swoosh-sound-effect-for-videos.mp3",
+        "bass_hit": "https://www.myinstants.com/media/sounds/vine-boom.mp3",
+        "wind": "https://www.soundboard.com/handler/DownLoadTrack.ashx?cliptrackid=274988",
+        "footsteps": "https://www.soundboard.com/handler/DownLoadTrack.ashx?cliptrackid=274989",
+        "unsheathe": "https://www.soundboard.com/handler/DownLoadTrack.ashx?cliptrackid=274990",
+        "heartbeat": "https://www.soundboard.com/handler/DownLoadTrack.ashx?cliptrackid=274991",
+        "explosion": "https://www.myinstants.com/media/sounds/explosion-meme.mp3"
     }
 }
 
@@ -136,29 +143,56 @@ class KenBurnsEffect:
         self.zoom_range = zoom_range
         self.pan_intensity = pan_intensity
 
-    def get_random_effect(self) -> dict:
-        """Get random Ken Burns parameters."""
-        zoom = random.uniform(*self.zoom_range)
-        pan_x = random.uniform(-self.pan_intensity, self.pan_intensity)
-        pan_y = random.uniform(-self.pan_intensity, self.pan_intensity)
+    def get_random_effect(self, move_type: Optional[str] = None) -> dict:
+        """Get Ken Burns parameters for a specific camera move."""
+        moves = ["push_in", "pull_out", "pan_left", "pan_right", "pan_up", "pan_down"]
+        if move_type not in moves:
+            move_type = random.choice(moves)
 
-        # Determine direction (positive or negative zoom)
-        if random.random() > 0.5:
-            # Zoom in
+        zoom = random.uniform(*self.zoom_range)
+        
+        start_zoom = 1.0
+        end_zoom = 1.0
+        start_x = 0.0
+        start_y = 0.0
+        end_x = 0.0
+        end_y = 0.0
+
+        if move_type == "push_in":
             start_zoom = 1.0
             end_zoom = zoom
-        else:
-            # Zoom out
+        elif move_type == "pull_out":
             start_zoom = zoom
             end_zoom = 1.0
+        elif move_type == "pan_left":
+            start_zoom = zoom
+            end_zoom = zoom
+            start_x = -self.pan_intensity
+            end_x = self.pan_intensity
+        elif move_type == "pan_right":
+            start_zoom = zoom
+            end_zoom = zoom
+            start_x = self.pan_intensity
+            end_x = -self.pan_intensity
+        elif move_type == "pan_up":
+            start_zoom = zoom
+            end_zoom = zoom
+            start_y = -self.pan_intensity
+            end_y = self.pan_intensity
+        elif move_type == "pan_down":
+            start_zoom = zoom
+            end_zoom = zoom
+            start_y = self.pan_intensity
+            end_y = -self.pan_intensity
 
         return {
             "start_zoom": start_zoom,
             "end_zoom": end_zoom,
-            "start_x": pan_x,
-            "start_y": pan_y,
-            "end_x": -pan_x,
-            "end_y": -pan_y
+            "start_x": start_x,
+            "start_y": start_y,
+            "end_x": end_x,
+            "end_y": end_y,
+            "move_type": move_type
         }
 
 
@@ -338,6 +372,32 @@ class VideoAssembler:
         for sfx_path, panel_id in sfx_list:
             if panel_id in panel_start_times:
                 mixed_sfx.append((sfx_path, panel_start_times[panel_id]))
+
+        # Inject dynamic sticker swoosh SFX
+        swoosh_path = download_default_asset("sfx", "swoosh")
+        if swoosh_path:
+            for i, (panel_path, duration_ms) in enumerate(zip(config.panels, panel_durations)):
+                duration_seconds = duration_ms / 1000
+                import re
+                m = re.search(r'panel_(P\d+)', panel_path.name)
+                panel_id = m.group(1) if m else f"P{i+1}"
+                
+                if panel_id in panel_start_times:
+                    start_t = panel_start_times[panel_id]
+                    sticker_dir = panel_path.parent.parent / "stickers"
+                    sticker_paths = sorted(list(sticker_dir.glob(f"sticker_{panel_id}_*.png")))
+                    if not sticker_paths:
+                        old_sticker = sticker_dir / f"sticker_{panel_id}.png"
+                        if old_sticker.exists():
+                            sticker_paths = [old_sticker]
+                            
+                    if sticker_paths:
+                        num_stickers = len(sticker_paths)
+                        if num_stickers > 0:
+                            sticker_duration = min(3.0, duration_seconds / max(1, num_stickers))
+                            for st_idx in range(num_stickers):
+                                if st_idx * sticker_duration < duration_seconds:
+                                    mixed_sfx.append((swoosh_path, start_t + st_idx * sticker_duration))
 
         # Add audio
         final_video = self._add_audio_enhanced(
@@ -843,9 +903,31 @@ class VideoAssembler:
         panel_path: Path,
         duration: float,
         start_time: float = 0,
-        focus_box: Optional[List[int]] = None
+        focus_box: Optional[List[int]] = None,
+        _is_subclip: bool = False
     ) -> Any:
         """Create a video clip for a single panel with Ken Burns effect centered on the focus box."""
+        if duration >= 3.0 and not _is_subclip:
+            # Slice into multiple shorter clips to increase visual pacing
+            num_slices = max(2, int(duration / 1.5))
+            slice_dur = duration / num_slices
+            clips = []
+            curr_start = 0.0 # concatenate_videoclips handles internal timings
+            for i in range(num_slices):
+                subclip = self._create_panel_clip(panel_path, slice_dur, curr_start, focus_box, _is_subclip=True)
+                
+                # Add white flash between subclips for impact
+                if i > 0 and vfx is not None:
+                    target_w, target_h = self.resolution
+                    flash = ColorClip(size=(target_w, target_h), color=(255, 255, 255)).with_duration(0.15)
+                    flash = flash.with_effects([vfx.CrossFadeOut(0.15)])
+                    subclip = CompositeVideoClip([subclip.with_start(0.0), flash.with_start(0.0)])
+                
+                clips.append(subclip.with_start(0.0))
+                
+            concat_clip = concatenate_videoclips(clips, method="compose")
+            return concat_clip.with_start(start_time)
+            
         # Load image and scale to cover size once using OpenCV
         img = cv2.imread(str(panel_path))
         if img is None:
@@ -899,19 +981,22 @@ class VideoAssembler:
         if sticker_paths:
             try:
                 loaded_stickers = []
-                for spath in sticker_paths[:5]: # Max 5 stickers
+                for spath in sticker_paths:
                     st_img = cv2.imread(str(spath), cv2.IMREAD_UNCHANGED)
                     if st_img is not None and st_img.shape[2] == 4:
                         loaded_stickers.append(st_img)
+                
+                # Load ALL stickers — no cap. Sort by area descending for stable ordering.
+                loaded_stickers.sort(key=lambda x: x.shape[0] * x.shape[1], reverse=True)
                         
                 if loaded_stickers:
-                    # 1. Background blurred panel (darkened to contrast characters)
-                    img_blur = cv2.GaussianBlur(img, (51, 51), 0)
-                    img_blur = (img_blur * 0.25).astype(np.uint8) # Darken significantly
+                    # 1. Blurred + darkened panel as background (instead of solid black)
                     scale_bg = self._get_resize_factor((w_orig, h_orig))
                     bg_w = int(w_orig * scale_bg)
                     bg_h = int(h_orig * scale_bg)
-                    bg_resized = self._resize_with_quality(img_blur, (bg_w, bg_h))
+                    bg_resized = self._resize_with_quality(img, (bg_w, bg_h))
+                    bg_resized = cv2.GaussianBlur(bg_resized, (0, 0), max(15.0, bg_w * 0.02))
+                    bg_resized = (bg_resized.astype(np.float32) * 0.3).astype(np.uint8)
                     
                     # Create background base clip
                     bg_clip = ImageClip(bg_resized, duration=duration)
@@ -919,11 +1004,13 @@ class VideoAssembler:
                     # Apply Ken Burns zoom to background
                     effect_params = self.ken_burns.get_random_effect()
                     target_w, target_h = self.resolution
+                    half_h = target_h // 2
                     
                     # Project center coordinates
                     resized_center_x = int(center_x * scale_bg)
                     resized_center_y = int(center_y * scale_bg)
                     
+                    # Classify and pre-process all stickers
                     processed_stickers = []
                     for idx, sticker_img in enumerate(loaded_stickers):
                         sticker_rgb = cv2.cvtColor(sticker_img[:, :, :3], cv2.COLOR_BGR2RGB)
@@ -936,14 +1023,27 @@ class VideoAssembler:
                             content_w, content_h = sticker_img.shape[1], sticker_img.shape[0]
                             
                         st_h, st_w = sticker_img.shape[:2]
-                        scale_factor = 0.85
-                        max_sticker_h = int(target_h * scale_factor)
-                        max_sticker_w = int(target_w * scale_factor)
                         
-                        scale_st = min(
-                            max_sticker_h / max(1, content_h),
-                            max_sticker_w / max(1, content_w)
+                        # Classify: can this sticker fit in half the screen (50%)?
+                        half_scale = min(
+                            (half_h - 40) / max(1, content_h),
+                            (target_w - 60) / max(1, content_w)
                         )
+                        fits_half = (content_h * half_scale <= half_h - 20)
+                        
+                        if fits_half:
+                            # Scale to fit within half screen height
+                            scale_st = min(
+                                (half_h - 40) / max(1, content_h),
+                                (target_w - 60) / max(1, content_w)
+                            )
+                        else:
+                            # Too big for half — scale to fit full screen (centered)
+                            scale_st = min(
+                                (target_h - 80) / max(1, content_h),
+                                (target_w - 60) / max(1, content_w)
+                            )
+                        
                         scale_st = max(scale_st, 0.1)
                         new_st_w = max(1, int(round(st_w * scale_st)))
                         new_st_h = max(1, int(round(st_h * scale_st)))
@@ -957,9 +1057,6 @@ class VideoAssembler:
                         shadow_alpha_norm = shadow_alpha[:, :, None] / 255.0
                         shadow_rgb = np.zeros_like(st_resized_rgb)
                         
-                        final_x = (target_w - new_st_w) // 2
-                        final_y_base = (target_h - new_st_h) // 2
-                            
                         processed_stickers.append({
                             "rgb": st_resized_rgb,
                             "alpha": st_resized_alpha,
@@ -969,12 +1066,12 @@ class VideoAssembler:
                             "sh_alpha_norm": shadow_alpha_norm,
                             "w": new_st_w,
                             "h": new_st_h,
-                            "final_x": final_x,
-                            "final_y_base": final_y_base,
+                            "fits_half": fits_half,
                             "idx": idx
                         })
                     
                     use_snap_zoom = random.random() > 0.3
+                    num_stickers = len(processed_stickers)
                     
                     # Fast OpenCV blending function evaluated per-frame
                     def zoom_and_blend_effect(get_frame, t):
@@ -1019,59 +1116,93 @@ class VideoAssembler:
                             cropped = self._resize_with_quality(cropped, (target_w, target_h))
                             
                         if processed_stickers:
-                            num_stickers = len(processed_stickers)
-                            sticker_duration = duration / num_stickers
-                            active_idx = min(int(t / sticker_duration), num_stickers - 1)
+                            # Sticker cycling: each sticker gets equal screen time
+                            sticker_duration = min(3.0, duration / max(1, num_stickers))
                             
-                            p_st = processed_stickers[active_idx]
-                            local_t = t - (active_idx * sticker_duration)
+                            # Determine primary sticker index
+                            primary_idx = int(t / sticker_duration) % num_stickers
+                            p_st = processed_stickers[primary_idx]
+                            
+                            # Build render list based on sticker classification
+                            stickers_to_render = []
+                            
+                            if p_st["fits_half"]:
+                                # Primary goes to top half
+                                top_y = (half_h - p_st["h"]) // 2
+                                top_y = max(10, top_y)
+                                center_x_st = (target_w - p_st["w"]) // 2
+                                stickers_to_render.append((p_st, center_x_st, top_y))
+                                
+                                # Try to find a secondary sticker for bottom half
+                                secondary_idx = (primary_idx + 1) % num_stickers
+                                if secondary_idx != primary_idx:
+                                    p_st_2 = processed_stickers[secondary_idx]
+                                    if p_st_2["fits_half"]:
+                                        bottom_y = half_h + (half_h - p_st_2["h"]) // 2
+                                        bottom_y = max(half_h + 10, bottom_y)
+                                        center_x_st2 = (target_w - p_st_2["w"]) // 2
+                                        stickers_to_render.append((p_st_2, center_x_st2, bottom_y))
+                            else:
+                                # "Too big" — center on screen with blurred background
+                                center_x_st = (target_w - p_st["w"]) // 2
+                                center_y_st = (target_h - p_st["h"]) // 2
+                                stickers_to_render.append((p_st, center_x_st, center_y_st))
+                                    
+                            local_t = t % sticker_duration
                             local_progress = local_t / sticker_duration
                             
-                            idx = p_st["idx"]
-                            new_st_w = p_st["w"]
-                            new_st_h = p_st["h"]
-                            final_x = p_st["final_x"]
-                            final_y_base = p_st["final_y_base"]
-                            
-                            slide_dur = min(0.5, sticker_duration * 0.25)
-                            if local_t < slide_dur and slide_dur > 0:
-                                progress_slide = local_t / slide_dur
-                                eased_slide = 1 - (1 - progress_slide) ** 2
-                                curr_y = int(final_y_base + 100 * (1.0 - eased_slide))
-                            else:
-                                import math
-                                phase = idx * math.pi
-                                y_offset = int(15 * math.sin((local_t - slide_dur) * 0.4 * 2 * math.pi + phase))
-                                curr_y = final_y_base + y_offset
+                            for (st_obj, st_final_x, st_final_y_base) in stickers_to_render:
+                                idx = st_obj["idx"]
+                                new_st_w = st_obj["w"]
+                                new_st_h = st_obj["h"]
+                                final_y_base = st_final_y_base
+                                
+                                slide_dur = min(0.3, sticker_duration * 0.25)
+                                if local_t < slide_dur and slide_dur > 0:
+                                    import math
+                                    progress_slide = local_t / slide_dur
+                                    eased_slide = 1 - (1 - progress_slide) ** 2
+                                    curr_y = int(final_y_base + 100 * (1.0 - eased_slide))
+                                    # Spring bounce scale during entrance
+                                    breathing_scale = 1.0 - math.exp(-local_t * 12) * math.cos(local_t * 20) * 0.4
+                                else:
+                                    import math
+                                    phase = idx * math.pi
+                                    y_offset = int(15 * math.sin((local_t - slide_dur) * 0.4 * 2 * math.pi + phase))
+                                    curr_y = final_y_base + y_offset
+                                    breathing_scale = 1.0 + 0.04 * local_progress
 
-                            # Apply opposing parallax and breathing scale
-                            parallax_x = -int(pan_x * 0.6)
-                            parallax_y = -int(pan_y * 0.6)
-                            
-                            breathing_scale = 1.0 + 0.04 * local_progress
-                            st_w_b = int(new_st_w * breathing_scale)
-                            st_h_b = int(new_st_h * breathing_scale)
-                            
-                            curr_st_rgb = self._resize_with_quality(p_st["rgb"], (st_w_b, st_h_b)) if breathing_scale > 1.01 else p_st["rgb"]
-                            curr_st_alpha_norm = self._resize_with_quality(p_st["alpha"], (st_w_b, st_h_b))[:, :, None] / 255.0 if breathing_scale > 1.01 else p_st["alpha_norm"]
-                            
-                            curr_sh_rgb = self._resize_with_quality(p_st["sh_rgb"], (st_w_b, st_h_b)) if breathing_scale > 1.01 else p_st["sh_rgb"]
-                            curr_sh_alpha_norm = self._resize_with_quality(p_st["sh_alpha"], (st_w_b, st_h_b))[:, :, None] / 255.0 if breathing_scale > 1.01 else p_st["sh_alpha_norm"]
+                                # Apply opposing parallax
+                                parallax_x = -int(pan_x * 0.6)
+                                parallax_y = -int(pan_y * 0.6)
+                                
+                                st_w_b = int(new_st_w * breathing_scale)
+                                st_h_b = int(new_st_h * breathing_scale)
+                                
+                                # Make sure dimensions are valid
+                                st_w_b = max(1, st_w_b)
+                                st_h_b = max(1, st_h_b)
+                                
+                                curr_st_rgb = self._resize_with_quality(st_obj["rgb"], (st_w_b, st_h_b)) if breathing_scale != 1.0 else st_obj["rgb"]
+                                curr_st_alpha_norm = self._resize_with_quality(st_obj["alpha"], (st_w_b, st_h_b))[:, :, None] / 255.0 if breathing_scale != 1.0 else st_obj["alpha_norm"]
+                                
+                                curr_sh_rgb = self._resize_with_quality(st_obj["sh_rgb"], (st_w_b, st_h_b)) if breathing_scale != 1.0 else st_obj["sh_rgb"]
+                                curr_sh_alpha_norm = self._resize_with_quality(st_obj["sh_alpha"], (st_w_b, st_h_b))[:, :, None] / 255.0 if breathing_scale != 1.0 else st_obj["sh_alpha_norm"]
 
-                            cropped = self._overlay_rgba(
-                                cropped,
-                                curr_sh_rgb,
-                                curr_sh_alpha_norm,
-                                final_x + 10 + parallax_x - int((st_w_b - new_st_w)/2),
-                                curr_y + 12 + parallax_y - int((st_h_b - new_st_h)/2),
-                            )
-                            cropped = self._overlay_rgba(
-                                cropped,
-                                curr_st_rgb,
-                                curr_st_alpha_norm,
-                                final_x + parallax_x - int((st_w_b - new_st_w)/2),
-                                curr_y + parallax_y - int((st_h_b - new_st_h)/2),
-                            )
+                                cropped = self._overlay_rgba(
+                                    cropped,
+                                    curr_sh_rgb,
+                                    curr_sh_alpha_norm,
+                                    st_final_x + 10 + parallax_x - int((st_w_b - new_st_w)/2),
+                                    curr_y + 12 + parallax_y - int((st_h_b - new_st_h)/2),
+                                )
+                                cropped = self._overlay_rgba(
+                                    cropped,
+                                    curr_st_rgb,
+                                    curr_st_alpha_norm,
+                                    st_final_x + parallax_x - int((st_w_b - new_st_w)/2),
+                                    curr_y + parallax_y - int((st_h_b - new_st_h)/2),
+                                )
                             
                         return cropped
                         
