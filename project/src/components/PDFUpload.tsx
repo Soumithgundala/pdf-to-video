@@ -2,6 +2,7 @@ import { useState, useCallback } from 'react';
 import { Upload, FileText, AlertCircle, Loader2, Sliders, Sparkles, Zap, Image as ImageIcon, X, Plus } from 'lucide-react';
 import { uploadPDF, processJob, uploadCharacterReferences } from '../lib/api';
 import { useAuth } from '../hooks/useAuth';
+import { VoiceSelector } from './VoiceSelector';
 
 interface PDFUploadProps {
   onUploadSuccess: (jobId: string) => void;
@@ -14,6 +15,7 @@ export function PDFUpload({ onUploadSuccess }: PDFUploadProps) {
   const [error, setError] = useState<string | null>(null);
   const [colorizerMode, setColorizerMode] = useState<string>('stable_diffusion');
   const [llmProvider, setLlmProvider] = useState<string>('google');
+  const [ttsVoice, setTtsVoice] = useState<string>('am_michael');
   const [characterFiles, setCharacterFiles] = useState<File[]>([]);
   const { user } = useAuth();
 
@@ -63,7 +65,7 @@ export function PDFUpload({ onUploadSuccess }: PDFUploadProps) {
       if (characterFiles.length > 0) {
         await uploadCharacterReferences(job_id, characterFiles);
       }
-      await processJob(job_id, { colorizerMode, llmProvider });
+      await processJob(job_id, { colorizerMode, llmProvider, ttsVoice });
       onUploadSuccess(job_id);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Upload failed');
@@ -195,7 +197,7 @@ export function PDFUpload({ onUploadSuccess }: PDFUploadProps) {
               <h3 className="font-semibold text-white">Generation Settings</h3>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
               {/* Colorizer Mode Selector */}
               <div className="space-y-2">
                 <label className="text-sm font-medium text-slate-300">
@@ -300,6 +302,14 @@ export function PDFUpload({ onUploadSuccess }: PDFUploadProps) {
                     </div>
                   </button>
                 </div>
+              </div>
+
+              {/* Narrator Voice Selector */}
+              <div className="space-y-2">
+                <VoiceSelector
+                  selectedVoice={ttsVoice}
+                  onVoiceChange={setTtsVoice}
+                />
               </div>
             </div>
           </div>

@@ -85,7 +85,8 @@ class MangaPipeline:
         job_id: str,
         background_music_path: Optional[Path] = None,
         cached_job_id: Optional[str] = None,
-        colorizer_mode: str = "stable_diffusion"
+        colorizer_mode: str = "stable_diffusion",
+        tts_voice: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Process a manga PDF through all pipeline phases.
@@ -95,6 +96,8 @@ class MangaPipeline:
             job_id: Unique job identifier
             background_music_path: Optional background music file
             cached_job_id: Optional cached job ID to reuse assets from
+
+            tts_voice: Kokoro voice ID (e.g. 'am_michael', 'af_heart')
 
         Returns:
             Dictionary with results and paths
@@ -266,7 +269,7 @@ class MangaPipeline:
                     phase_message="Starting audio generation"
                 )
 
-                audio_results = self._run_phase_3(story_analysis)
+                audio_results = self._run_phase_3(story_analysis, tts_voice=tts_voice)
 
                 results["phases"]["phase_3"] = {
                     "status": "completed",
@@ -699,12 +702,13 @@ class MangaPipeline:
 
     def _run_phase_3(
         self,
-        story_analysis: StoryAnalysis
+        story_analysis: StoryAnalysis,
+        tts_voice: Optional[str] = None,
     ) -> list:
         """Execute Phase 3: Audio generation."""
         audio_gen = AudioGenerator(
-            voice=config.TTS_VOICE,
-            rate=config.TTS_RATE,
+            voice=tts_voice or config.TTS_VOICE,
+            speed=config.TTS_SPEED,
             output_dir=self.job_workspace / "audio"
         )
 
@@ -913,15 +917,23 @@ class MangaPipeline:
 
         # 6. Reconstruct Audio Results
         from modules.audio_generator import GeneratedAudio
-        from mutagen.mp3 import MP3
         audio_results = []
         for part in story_analysis.parts:
-            audio_path = self.job_workspace / "audio" / f"part_{part.part_number}_voiceover.mp3"
+            # Support both .wav (Kokoro) and .mp3 (legacy edge-tts) cached files
+            audio_path = self.job_workspace / "audio" / f"part_{part.part_number}_voiceover.wav"
+            if not audio_path.exists():
+                audio_path = self.job_workspace / "audio" / f"part_{part.part_number}_voiceover.mp3"
             try:
-                audio = MP3(str(audio_path))
-                duration_ms = int(audio.info.length * 1000)
+                import soundfile as sf
+                info = sf.info(str(audio_path))
+                duration_ms = int(info.duration * 1000)
             except Exception:
-                duration_ms = 40000
+                try:
+                    from mutagen.mp3 import MP3
+                    audio = MP3(str(audio_path))
+                    duration_ms = int(audio.info.length * 1000)
+                except Exception:
+                    duration_ms = 40000
                 
             # Load cached word boundaries if they exist
             words_path = audio_path.with_name(f"part_{part.part_number}_words.json")

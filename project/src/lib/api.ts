@@ -2,6 +2,14 @@ const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const API_URL = import.meta.env.VITE_API_URL || `${SUPABASE_URL}/functions/v1/manga-api`;
 
+export interface Voice {
+  id: string;
+  name: string;
+  gender: 'male' | 'female';
+  accent: string;
+  sample_url: string;
+}
+
 export async function uploadPDF(file: File): Promise<{ job_id: string }> {
   const formData = new FormData();
   formData.append('file', file);
@@ -24,7 +32,7 @@ export async function uploadPDF(file: File): Promise<{ job_id: string }> {
 
 export async function processJob(
   jobId: string,
-  options?: { colorizerMode?: string; llmProvider?: string }
+  options?: { colorizerMode?: string; llmProvider?: string; ttsVoice?: string }
 ): Promise<void> {
   const response = await fetch(`${API_URL}/api/jobs/${jobId}/process`, {
     method: 'POST',
@@ -35,6 +43,7 @@ export async function processJob(
     body: JSON.stringify({
       llm_provider: options?.llmProvider || 'google',
       colorizer_mode: options?.colorizerMode || 'stable_diffusion',
+      tts_voice: options?.ttsVoice || null,
     }),
   });
 
@@ -82,4 +91,23 @@ export async function uploadCharacterReferences(jobId: string, files: File[]): P
     const error = await response.json().catch(() => ({ detail: 'Uploading character references failed' }));
     throw new Error(error.detail || 'Uploading character references failed');
   }
+}
+
+export async function getVoices(): Promise<Voice[]> {
+  const response = await fetch(`${API_URL}/api/voices`, {
+    headers: {
+      'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error('Failed to fetch voices');
+  }
+
+  const data = await response.json();
+  return data.voices;
+}
+
+export function getVoiceSampleUrl(voiceId: string): string {
+  return `${API_URL}/api/voices/${voiceId}/sample`;
 }

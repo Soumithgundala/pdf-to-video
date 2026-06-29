@@ -8,8 +8,9 @@ numpy>=1.26.0
 openai>=1.12.0
 google-genai>=1.0.0
 
-# Audio Generation
-edge-tts>=6.1.9
+# Audio Generation (Kokoro-82M local TTS)
+kokoro>=0.9.0
+soundfile>=0.12.0
 mutagen>=1.47.0
 
 # Video Assembly

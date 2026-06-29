@@ -62,9 +62,9 @@ TARGET_AUDIO_DURATION_SECONDS = 52
 TARGET_SCRIPT_WORD_COUNT = (80, 105)
 PANELS_PER_PART = (5, 7)
 
-# Audio
-TTS_VOICE = os.getenv("TTS_VOICE", "en-US-GuyNeural")
-TTS_RATE = os.getenv("TTS_RATE", "+8%")
+# Audio (Kokoro-82M TTS)
+TTS_VOICE = os.getenv("TTS_VOICE", "am_michael")
+TTS_SPEED = float(os.getenv("TTS_SPEED", "1.0"))
 BACKGROUND_MUSIC_VOLUME = float(os.getenv("BACKGROUND_MUSIC_VOLUME", "0.1"))
 
 # Colorizer

@@ -32,6 +32,15 @@ app = FastAPI(
     version="1.0.0"
 )
 
+# Enable CORS so the Vite frontend (different port) can reach the API
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 def _normalize_status_payload(job_id: str, payload: dict) -> dict:
     """Normalize status payloads from Supabase/filesystem into one shape."""
@@ -199,6 +208,7 @@ class ProcessRequest(BaseModel):
     llm_provider: str = "google"
     background_music_url: Optional[str] = None
     colorizer_mode: str = "stable_diffusion"
+    tts_voice: Optional[str] = None
 
 
 @app.get("/api/health")
@@ -340,7 +350,8 @@ async def process_job(
         job_id,
         pdf_path,
         request.llm_provider,
-        request.colorizer_mode
+        request.colorizer_mode,
+        request.tts_voice,
     )
 
     return {"status": "processing", "job_id": job_id}
@@ -348,7 +359,7 @@ async def process_job(
 
 
 
-def run_pipeline(job_id: str, pdf_path: Path, llm_provider: str, colorizer_mode: str = "stable_diffusion"):
+def run_pipeline(job_id: str, pdf_path: Path, llm_provider: str, colorizer_mode: str = "stable_diffusion", tts_voice: Optional[str] = None):
     """Run the pipeline in background."""
     logger.info(f"Starting pipeline for job {job_id}")
 
@@ -366,16 +377,18 @@ def run_pipeline(job_id: str, pdf_path: Path, llm_provider: str, colorizer_mode:
                         import config
                         cached_ws = Path(config.WORKSPACE_DIR) / cached_job["id"]
                         # Verify vital assets exist in cached workspace before skipping
+                        has_audio = any((cached_ws / "audio").glob("part_*_voiceover.wav")) or \
+                                    any((cached_ws / "audio").glob("part_*_voiceover.mp3"))
                         if (cached_ws / "story_analysis.json").exists() and \
                            any((cached_ws / "panels").glob("panel_P*.png")) and \
-                           any((cached_ws / "audio").glob("part_*_voiceover.mp3")):
+                           has_audio:
                             cached_job_id = cached_job["id"]
                             logger.info(f"Found valid cached job {cached_job_id} for PDF hash {pdf_hash}")
         except Exception as cache_err:
             logger.warning(f"Error checking cache: {cache_err}")
 
         pipeline = MangaPipeline(llm_provider=llm_provider)
-        results = pipeline.process(pdf_path, job_id, cached_job_id=cached_job_id, colorizer_mode=colorizer_mode)
+        results = pipeline.process(pdf_path, job_id, cached_job_id=cached_job_id, colorizer_mode=colorizer_mode, tts_voice=tts_voice)
 
         # Update job record
         if supabase:
@@ -672,6 +685,54 @@ async def get_job(job_id: str):
         "job": job,
         "video_parts": video_parts
     }
+
+# -------------------------------------------------------------------
+# Voice selection endpoints (Kokoro-82M)
+# -------------------------------------------------------------------
+
+VOICE_SAMPLES_DIR = WORKSPACE_DIR / "_voice_samples"
+VOICE_SAMPLES_DIR.mkdir(parents=True, exist_ok=True)
+
+
+@app.get("/api/voices")
+async def list_voices():
+    """Return available Kokoro TTS voices with metadata."""
+    from modules.audio_generator import KOKORO_VOICES
+
+    voices = []
+    for voice_id, meta in KOKORO_VOICES.items():
+        voices.append({
+            "id": voice_id,
+            "name": meta["name"],
+            "gender": meta["gender"],
+            "accent": meta["accent"],
+            "sample_url": f"/api/voices/{voice_id}/sample",
+        })
+    return {"voices": voices}
+
+
+@app.get("/api/voices/{voice_id}/sample")
+async def get_voice_sample(voice_id: str):
+    """Serve a short audio sample for a voice. Generates on first request, then caches."""
+    from modules.audio_generator import KOKORO_VOICES, AudioGenerator
+
+    if voice_id not in KOKORO_VOICES:
+        raise HTTPException(status_code=404, detail=f"Unknown voice: {voice_id}")
+
+    sample_path = VOICE_SAMPLES_DIR / f"{voice_id}.wav"
+
+    if not sample_path.exists():
+        try:
+            AudioGenerator.generate_sample(voice_id, sample_path)
+        except Exception as e:
+            logger.error(f"Failed to generate sample for {voice_id}: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to generate voice sample: {e}")
+
+    return FileResponse(
+        path=str(sample_path),
+        media_type="audio/wav",
+        filename=f"{voice_id}_sample.wav",
+    )
 
 
 if __name__ == "__main__":
